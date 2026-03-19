@@ -25,7 +25,7 @@ Without structure, AI-assisted development on large projects fails in predictabl
 - **Architecture by accident** — modules get built without a shared data model, creating integration nightmares later
 - **The 80% wall** — projects get 80% done then stall because the AI has no map of what remains
 
-The kit solves all of these with three files Claude Code reads automatically (`CLAUDE.md`, `LEARNINGS.md`, and module-level `CLAUDE.md` files) and seven slash commands that enforce a structured workflow.
+The kit solves all of these with three files Claude Code reads automatically (`CLAUDE.md`, `LEARNINGS.md`, and module-level `CLAUDE.md` files) and nine slash commands that enforce a structured workflow.
 
 ---
 
@@ -60,19 +60,41 @@ your-project/
 ├── .gitignore                       ← Updated with kit-safe defaults
 │
 ├── .claude/
-│   ├── README.md                    ← Kit documentation
-│   ├── commands/                    ← Slash commands (available in Claude Code)
-│   │   ├── init.md                  → /project:init
-│   │   ├── research.md              → /project:research
-│   │   ├── blueprint.md             → /project:blueprint
-│   │   ├── spec.md                  → /project:spec
-│   │   ├── module.md                → /project:module
-│   │   ├── review.md                → /project:review
-│   │   └── status.md                → /project:status
-│   └── templates/                   ← Spec document skeletons
-│       ├── MASTER_BLUEPRINT.md
-│       ├── MODULE_SPEC.md
-│       └── CLAUDE_MODULE.md
+│   ├── commands/                    ← Slash commands (thin wrappers)
+│   │   ├── project-init.md          → /project-init [idea]
+│   │   ├── project-research.md      → /project-research [topic]
+│   │   ├── project-blueprint.md     → /project-blueprint
+│   │   ├── project-spec.md          → /project-spec [module]
+│   │   ├── project-module.md        → /project-module [name]
+│   │   ├── project-review.md        → /project-review
+│   │   ├── project-status.md        → /project-status
+│   │   ├── project-deploy.md        → /project-deploy        (NEW)
+│   │   └── project-test.md          → /project-test           (NEW)
+│   │
+│   └── skills/                      ← Skill logic + bundled templates
+│       ├── project-init/
+│       │   ├── SKILL.md
+│       │   ├── blueprint-template.md
+│       │   ├── module-spec-template.md
+│       │   └── claude-module-template.md
+│       ├── project-research/
+│       │   └── SKILL.md
+│       ├── project-blueprint/
+│       │   └── SKILL.md
+│       ├── project-spec/
+│       │   ├── SKILL.md
+│       │   ├── module-spec-template.md
+│       │   └── claude-module-template.md
+│       ├── project-module/
+│       │   └── SKILL.md
+│       ├── project-review/
+│       │   └── SKILL.md
+│       ├── project-status/
+│       │   └── SKILL.md
+│       ├── project-deploy/           (NEW)
+│       │   └── SKILL.md
+│       └── project-test/             (NEW)
+│           └── SKILL.md
 │
 └── specs/                           ← All generated spec documents (commit these)
     ├── RESEARCH.md                  ← Domain research output
@@ -121,15 +143,28 @@ The kit enforces this sequence. Claude will refuse to write code until a spec ex
 
 ### Compound Learning
 
-The most powerful feature is that the system gets smarter over time within a project. After every session, `/project:review` adds new entries to `LEARNINGS.md` — mistakes made, patterns that worked, stack-specific discoveries. These get read at the start of every subsequent session, so the same mistake never happens twice.
+The most powerful feature is that the system gets smarter over time within a project. After every session, `/project-review` adds new entries to `LEARNINGS.md` — mistakes made, patterns that worked, stack-specific discoveries. These get read at the start of every subsequent session, so the same mistake never happens twice.
 
 Boris Cherny (creator of Claude Code) follows this exact pattern: every mistake gets turned into a rule in `CLAUDE.md`. The kit automates this discipline.
 
 ---
 
-## The Seven Slash Commands
+## Tool Integrations
 
-### `/project:init [idea]`
+The skills in this kit leverage Claude's MCP (Model Context Protocol) tool integrations to extend capabilities:
+
+- **Exa** — Web search and code example discovery. Used by `/project-research` to find domain knowledge and implementation patterns from across the web and GitHub.
+- **Ref** — Documentation lookup. Used to find official docs and technical references without bloat.
+- **Playwright / Chrome** — Visual testing and browser automation. Used by `/project-test` to validate visual rendering and UI behavior.
+- **Vercel** — Deployment verification. Used by `/project-deploy` to verify builds, check environment variables, and confirm production readiness.
+
+These tools are invoked automatically by the skill logic — you don't need to configure anything beyond the skills themselves.
+
+---
+
+## The Nine Slash Commands
+
+### `/project-init [idea]`
 
 **Use when:** Starting any new project, or adding a major new feature area.
 
@@ -147,7 +182,7 @@ This is the main entry point. Give it any project description — as vague or sp
 
 ---
 
-### `/project:research [topic]`
+### `/project-research [topic]`
 
 **Use when:** You need deep research on a specific domain, technology, regulation, or competitor before making architectural decisions.
 
@@ -155,14 +190,14 @@ Runs a structured web-search research session and saves findings to `specs/resea
 
 Examples:
 ```
-/project:research "UK GDPR requirements for storing student data"
-/project:research "MIS integration APIs — SIMS, Bromcom, Arbor"
-/project:research "multi-tenant SaaS patterns with Postgres row-level security"
+/project-research "UK GDPR requirements for storing student data"
+/project-research "MIS integration APIs — SIMS, Bromcom, Arbor"
+/project-research "multi-tenant SaaS patterns with Postgres row-level security"
 ```
 
 ---
 
-### `/project:blueprint`
+### `/project-blueprint`
 
 **Use when:** You need to generate or regenerate the master architecture document. Also useful mid-project when major architectural decisions need to be revised.
 
@@ -170,7 +205,7 @@ Reads all existing specs and research, then produces or updates `specs/MASTER_BL
 
 ---
 
-### `/project:spec [module-name]`
+### `/project-spec [module-name]`
 
 **Use when:** Creating or updating the spec for a specific module.
 
@@ -182,7 +217,7 @@ Always asks for approval before saving.
 
 ---
 
-### `/project:module [module-name]`
+### `/project-module [module-name]`
 
 **Use when:** Ready to implement a module that already has an approved spec.
 
@@ -196,7 +231,7 @@ Then enters Plan Mode — writes out the full implementation plan and waits for 
 
 ---
 
-### `/project:review`
+### `/project-review`
 
 **Use when:** At the end of every session, or after completing any task.
 
@@ -206,11 +241,31 @@ This command is what makes the system compound. Don't skip it.
 
 ---
 
-### `/project:status`
+### `/project-status`
 
 **Use when:** You want a full project dashboard — what specs exist, what's been implemented, what's next.
 
 Produces a clean status table showing every module's state (no spec / spec exists / in progress / complete) and recommends the next task.
+
+---
+
+### `/project-deploy`
+
+**Use when:** Ready to deploy to production or need to verify deployment readiness.
+
+Verifies the build succeeds, checks environment variables are set, validates critical integrations are configured, and performs a test deployment. Uses Vercel integration to confirm production readiness.
+
+**Output:** Deployment verification report and promotion to production, or detailed feedback on blockers.
+
+---
+
+### `/project-test`
+
+**Use when:** Need comprehensive test coverage — unit tests, type checking, linting, and visual validation.
+
+Runs the full test suite: unit tests, type checking (TypeScript), linting, and visual regression testing using browser automation. Generates a coverage report and flags any regressions.
+
+**Output:** Test results, coverage report, visual diff comparisons (if applicable).
 
 ---
 
@@ -232,7 +287,7 @@ bash bootstrap.sh
 Output confirms greenfield detection. Then in Claude Code:
 
 ```
-/project:init "CRM solution for the UK education market"
+/project-init "CRM solution for the UK education market"
 ```
 
 **Phase 1 — Clarification**
@@ -325,7 +380,7 @@ Total session time: approximately 25-35 minutes. No code written yet.
 You open Claude Code. It reads `CLAUDE.md` automatically.
 
 ```
-/project:status
+/project-status
 ```
 
 Output:
@@ -346,11 +401,11 @@ MODULES:
   invoicing        ✅ Spec  ❌ Not started
 
 NEXT RECOMMENDED TASK:
-  /project:module organisations
+  /project-module organisations
 ```
 
 ```
-/project:module organisations
+/project-module organisations
 ```
 
 Claude reads all four prerequisite files, then enters Plan Mode:
@@ -376,7 +431,7 @@ feat(organisations): add organisation detail page with school roster
 ```
 
 ```
-/project:review
+/project-review
 ```
 
 Claude adds to `LEARNINGS.md`:
@@ -407,7 +462,7 @@ And updates `CLAUDE.md` with one new rule:
 You open Claude Code. It reads `CLAUDE.md` (now with the RLS rule) and `LEARNINGS.md` (now with the Prisma relation tip). It already knows not to make the mistakes from Day 2.
 
 ```
-/project:module contacts
+/project-module contacts
 ```
 
 The RLS middleware is already in place from the previous module. The Prisma relation naming is done correctly first time. The compound effect has already kicked in.
@@ -419,17 +474,17 @@ The RLS middleware is already in place from the previous module. The Prisma rela
 You realise you need to understand Xero's UK-specific tax handling before designing the invoicing module properly.
 
 ```
-/project:research "Xero API UK VAT handling and invoice webhooks"
+/project-research "Xero API UK VAT handling and invoice webhooks"
 ```
 
-Claude researches, saves findings to `specs/research/xero-vat.md`, and updates `LEARNINGS.md`. When you later run `/project:spec invoicing`, Claude reads this research automatically and designs the data model with correct VAT fields and webhook handling from the start.
+Claude researches, saves findings to `specs/research/xero-vat.md`, and updates `LEARNINGS.md`. When you later run `/project-spec invoicing`, Claude reads this research automatically and designs the data model with correct VAT fields and webhook handling from the start.
 
 ---
 
 ### Month 2 — Checkpoint
 
 ```
-/project:status
+/project-status
 ```
 
 ```
@@ -450,7 +505,7 @@ MODULES:
 LEARNINGS.md: 23 entries (4 open questions)
 
 NEXT RECOMMENDED TASK:
-  /project:module invoicing
+  /project-module invoicing
 ```
 
 ---
@@ -459,7 +514,7 @@ NEXT RECOMMENDED TASK:
 
 ### One session = one task
 
-Never try to implement multiple modules in a single session. Long sessions degrade quality as context fills. If you've had to correct Claude on the same issue twice in a session, run `/project:review` then `/clear` and start fresh.
+Never try to implement multiple modules in a single session. Long sessions degrade quality as context fills. If you've had to correct Claude on the same issue twice in a session, run `/project-review` then `/clear` and start fresh.
 
 ### The spec is the source of truth — not the code
 
@@ -488,9 +543,9 @@ Fill this in before running any slash commands. It captures what already exists,
 In brownfield mode, the workflow shifts slightly:
 
 1. Fill in `AUDIT.md` manually
-2. Run `/project:status` to understand the current state
-3. Use `/project:spec [module]` to write spec *deltas* for new features (what's being ADDED or CHANGED, not a from-scratch spec)
-4. Use `/project:research` for any unfamiliar areas of the existing codebase
+2. Run `/project-status` to understand the current state
+3. Use `/project-spec [module]` to write spec *deltas* for new features (what's being ADDED or CHANGED, not a from-scratch spec)
+4. Use `/project-research` for any unfamiliar areas of the existing codebase
 
 ---
 
@@ -512,13 +567,15 @@ As you discover better patterns — in your CLAUDE.md, your slash commands, your
 | Command | What it does |
 |---------|-------------|
 | `bash bootstrap.sh` | One-time setup, auto-detects green/brownfield |
-| `/project:init [idea]` | Research → blueprint → all specs → roadmap |
-| `/project:research [topic]` | Deep research, saved to specs/research/ |
-| `/project:blueprint` | Generate/regenerate master architecture |
-| `/project:spec [module]` | Create or update a module spec |
-| `/project:module [name]` | Plan + implement a module against its spec |
-| `/project:review` | Capture learnings, compound into CLAUDE.md |
-| `/project:status` | Full project dashboard |
+| `/project-init [idea]` | Research → blueprint → all specs → roadmap |
+| `/project-research [topic]` | Deep research, saved to specs/research/ |
+| `/project-blueprint` | Generate/regenerate master architecture |
+| `/project-spec [module]` | Create or update a module spec |
+| `/project-module [name]` | Plan + implement a module against its spec |
+| `/project-review` | Capture learnings, compound into CLAUDE.md |
+| `/project-status` | Full project dashboard |
+| `/project-deploy` | Verify deployment readiness and promote to production |
+| `/project-test` | Run comprehensive tests (unit, type, lint, visual) |
 
 | File | Purpose |
 |------|---------|
