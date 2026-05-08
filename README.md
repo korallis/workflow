@@ -9,9 +9,17 @@ A single `bootstrap.sh` script that turns any project directory into a structure
 ## Quick start
 
 ```bash
-curl -O https://raw.githubusercontent.com/korallis/workflow/main/bootstrap.sh
+# Download with fail-fast flags (no silent redirects, no partial files)
+curl -fL -o bootstrap.sh https://raw.githubusercontent.com/korallis/workflow/main/bootstrap.sh
+
+# Inspect before executing — it's only ~4500 lines and worth a skim
+less bootstrap.sh
+
+# Run when you're satisfied
 bash bootstrap.sh
 ```
+
+For reproducibility, pin to a release tag once you know the kit version you trust: replace `/main/` in the URL with `/v0.1.0/` (or whichever tag) and verify against a published checksum.
 
 Then in Claude Code:
 
