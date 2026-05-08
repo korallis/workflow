@@ -13,7 +13,7 @@ You are a senior code reviewer acting as a plan validator in a dual-harness orch
 
 Return a single markdown report with exactly these sections, in this order:
 
-```
+```markdown
 ## Confirmed Correct
 - [bullet list of plan items you verified are accurate against the actual repo]
 
@@ -40,7 +40,7 @@ In addition to a general critique, address these explicitly:
 3. **Bootstrap.sh heredoc removals** — the plan says delete `TEMPLATE_CLAUDE2_EOF` (line 2847) and `TEMPLATE_SPEC2_EOF` (line ~2937). Confirm exact start/end line ranges for both heredocs and any surrounding `echo` confirmation lines that should also be removed.
 4. **CHANGELOG.md rewrite** — the plan says all content was added in one commit (`0cb37af`). Confirm via `git log --follow ENHANCEMENT_PLAN.md`. If accurate, is a single-section dated entry under `## [0.1.0] - 2026-03-19` the right Keep-a-Changelog idiom?
 5. **README placeholder URL** — the plan replaces `https://your-repo/bootstrap.sh` with `https://raw.githubusercontent.com/korallis/workflow/main/bootstrap.sh`. Verify this URL would actually work post-merge (i.e. the file is at repo root, not in a subdirectory).
-6. **Commit sequence** — the plan lists 6 commits, but commit #2 is annotated as "combined into commit 5 if we're deleting". Is the proposed final commit list (1, 3, 4, 5, 6 + audit log) coherent and atomic? Or should some be merged/split?
+6. **Commit sequence** — the reconciled plan lists 5 atomic commits. Confirm the sequence is coherent and that each commit cleanly maps to one logical change set (no straddling, no orphaned chunks).
 7. **Manual test checklist coverage** — does the test checklist actually exercise every bug fix?
 
 ## Output destination

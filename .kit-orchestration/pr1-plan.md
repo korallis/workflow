@@ -147,7 +147,8 @@ The full validator report is at `.kit-orchestration/pr1-validation.md`. No disag
 
 **Renamed**:
 - `ENHANCEMENT_PLAN.md` → `CHANGELOG.md` (bug #7) — `git mv` then rewrite to Keep-a-Changelog format. Use commit date `2026-03-19`. Structure:
-  ```
+
+  ```markdown
   # Changelog
 
   All notable changes to this project will be documented in this file.
@@ -230,7 +231,7 @@ grep -q '/project-fix-tests' .claude/skills/project-test/SKILL.md && echo "FAIL:
 
 ### New files
 
-```
+```text
 .claude/commands/project-execute.md           # thin wrapper
 .claude/skills/project-execute/SKILL.md       # orchestrator skill (effort: high)
 .claude/skills/project-execute/dispatch-prompt-template.md   # template for Codex dispatch prompt assembly
@@ -310,7 +311,7 @@ User uses CodeRabbit. The `claude-review.yml` GitHub Action workflow is **droppe
 
 ### New files
 
-```
+```text
 .claude/hooks/pre-compact.sh                            # PreCompact hook (chmod +x)
 .claude/settings.json                                   # PreCompact wiring + SessionStart compact backup
 .claude/skills/project-security-review/SKILL.md         # effort: high; instructs Claude to launch Agent
