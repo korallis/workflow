@@ -57,6 +57,8 @@ bash .claude/lib/project-tracks.sh start [modules...] [--harness=codex|claude]
 
 All tracks in one invocation use the same harness. Default harness is `codex`.
 
+**Stage 1 supports only `--harness=codex`.** `--harness=claude` is reserved for a future stage; the current launcher fails fast rather than silently bypass the per-track lock, JSON-mode capture, and schema validation that the codex path gets through `dispatch.sh`.
+
 For Codex tracks, the helper launches `.claude/lib/dispatch.sh` with:
 
 ```bash
@@ -67,6 +69,3 @@ PORT=<reserved-port>
 ```
 
 `KIT_PARALLEL_TRACK` already namespaces the dispatcher's lock by module, so `KIT_ALLOW_CONCURRENT=1` is **not** set — it would disable that lock and let a second launch of the same module race in the same worktree. `KIT_DISPATCH_TS` is the per-track timestamp; the dispatcher reuses it for `.log`/`.jsonl`/`-report.json` filenames so they share the `<TS>-<module>` identifier with the per-track prompt directory.
-
-For Claude tracks, the helper uses `claude -w track-<module>` when the Claude
-CLI is available.

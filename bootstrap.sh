@@ -4084,6 +4084,8 @@ bash .claude/lib/project-tracks.sh start [modules...] [--harness=codex|claude]
 
 All tracks in one invocation use the same harness. Default harness is `codex`.
 
+**Stage 1 supports only `--harness=codex`.** `--harness=claude` is reserved for a future stage; the current launcher fails fast rather than silently bypass the per-track lock, JSON-mode capture, and schema validation that the codex path gets through `dispatch.sh`.
+
 For Codex tracks, the helper launches `.claude/lib/dispatch.sh` with:
 
 ```bash
@@ -4094,9 +4096,6 @@ PORT=<reserved-port>
 ```
 
 `KIT_PARALLEL_TRACK` already namespaces the dispatcher's lock by module, so `KIT_ALLOW_CONCURRENT=1` is **not** set — it would disable that lock and let a second launch of the same module race in the same worktree. `KIT_DISPATCH_TS` is the per-track timestamp; the dispatcher reuses it for `.log`/`.jsonl`/`-report.json` filenames so they share the `<TS>-<module>` identifier with the per-track prompt directory.
-
-For Claude tracks, the helper uses `claude -w track-<module>` when the Claude
-CLI is available.
 SKILL_TRACKS_EOF
 echo -e "  ${GREEN}✓${RESET} .claude/skills/project-tracks/SKILL.md"
 
@@ -4540,7 +4539,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PARALLEL_DIR="$REPO_ROOT/.claude/parallel"
 TRACKS_FILE="$PARALLEL_DIR/tracks.json"
-REGISTRY_LOCK="$PARALLEL_DIR/locks/registry"
+# Registry lock lives OUTSIDE the per-track locks/ dir so a module slug like
+# "registry" (kebab-case allows it) can't collide with the registry mutex.
+REGISTRY_LOCK="$PARALLEL_DIR/.registry-lock"
 MODULES_FILE="$REPO_ROOT/specs/MODULES.md"
 PORT_BASE="${KIT_PARALLEL_PORT_BASE:-3000}"
 PARALLEL_MAX="${KIT_PARALLEL_MAX:-4}"
@@ -4764,6 +4765,20 @@ append_registry_entry() {
   with_registry_lock
   trap 'rm -rf "$REGISTRY_LOCK"' RETURN
 
+  # Refuse to register a duplicate. Two starts of the same module should not
+  # both write a row to tracks.json — that would corrupt merge_order and
+  # break /project-tracks status. The check runs under the registry lock so
+  # it's free of races.
+  if command -v jq >/dev/null 2>&1; then
+    if jq -e --arg m "$module" '.tracks | map(select(.module == $m)) | length > 0' "$TRACKS_FILE" >/dev/null; then
+      die "$module is already registered in tracks.json (running or unfinished). Run /project-tracks cleanup first, or pick a different module."
+    fi
+  else
+    if grep -q "\"module\":[[:space:]]*\"$module\"" "$TRACKS_FILE" 2>/dev/null; then
+      die "$module is already registered in tracks.json (running or unfinished). Run /project-tracks cleanup first, or pick a different module."
+    fi
+  fi
+
   local id escaped_worktree tmp
   id="track-$module-${started//[^0-9]/}"
   escaped_worktree="$(json_string "${worktree#$REPO_ROOT/}")"
@@ -4800,35 +4815,75 @@ append_registry_entry() {
 }
 
 copy_worktree_includes() {
+  # `.worktreeinclude` is operator-controlled but easy to write incorrectly.
+  # Reject absolute paths and `..` traversals, then canonicalise both source
+  # and destination and verify they stay within their respective roots
+  # (REPO_ROOT and worktree). Anything outside is logged and skipped — never
+  # copied — so a stray `/etc/passwd` or `../../foo` in `.worktreeinclude`
+  # cannot exfiltrate or overwrite files outside the worktree.
   local worktree="$1" include_file="$REPO_ROOT/.worktreeinclude" entry
   [[ -f "$include_file" ]] || return 0
+
+  local repo_canon worktree_canon
+  repo_canon="$(cd "$REPO_ROOT" && pwd -P)"
+  worktree_canon="$(cd "$worktree" && pwd -P)"
+
   while IFS= read -r entry; do
     [[ -z "$entry" || "$entry" == \#* ]] && continue
-    if [[ -e "$REPO_ROOT/$entry" ]]; then
-      mkdir -p "$worktree/$(dirname "$entry")"
-      cp -R "$REPO_ROOT/$entry" "$worktree/$entry"
+    if [[ "$entry" = /* || "$entry" == *".."* ]]; then
+      warn ".worktreeinclude entry rejected (absolute or traversal): $entry"
+      continue
     fi
+
+    local src="$REPO_ROOT/$entry"
+    [[ -e "$src" ]] || continue
+
+    # Canonicalise. -m allows the destination not to exist yet; -e on src
+    # ensures we resolve only real source paths.
+    local src_canon dst_canon
+    src_canon="$(realpath -e "$src" 2>/dev/null)" || { warn ".worktreeinclude: cannot canonicalise $entry"; continue; }
+    dst_canon="$(realpath -m "$worktree/$entry")"
+
+    if [[ "$src_canon" != "$repo_canon"/* ]]; then
+      warn ".worktreeinclude entry escapes repo root, skipping: $entry"
+      continue
+    fi
+    if [[ "$dst_canon" != "$worktree_canon"/* ]]; then
+      warn ".worktreeinclude destination escapes worktree, skipping: $entry"
+      continue
+    fi
+
+    mkdir -p "$(dirname "$dst_canon")"
+    cp -R "$src_canon" "$dst_canon"
   done < "$include_file"
 }
 
 write_track_prompt() {
+  # Quoted heredoc terminator (PROMPT_EOF in single quotes) disables ALL
+  # interpolation — backticks AND $module — so the markdown can use
+  # backticks freely. We do the $module substitution ourselves with sed
+  # afterwards. This is safer than escaping every backtick by hand.
   local module="$1" prompt_file="$2"
-  cat > "$prompt_file" <<EOF
-# Parallel track dispatch: $module
+  cat > "$prompt_file" <<'PROMPT_EOF'
+# Parallel track dispatch: __MODULE__
 
-Implement only the $module module in this isolated worktree.
+Implement only the __MODULE__ module in this isolated worktree.
 
 Read:
-- specs/modules/$module/SPEC.md
-- specs/modules/$module/CLAUDE.md
+- specs/modules/__MODULE__/SPEC.md
+- specs/modules/__MODULE__/CLAUDE.md
 - CLAUDE.md
 
 Respect parallel track constraints:
-- Do not edit root LEARNINGS.md directly. Write track learnings as a markdown fragment to `.claude/parallel/learnings/$module.md`; the integrator merges fragments after merge.
+- Do not edit root LEARNINGS.md directly. Write track learnings as a markdown fragment to `.claude/parallel/learnings/__MODULE__.md`; the integrator merges fragments after merge.
 - Do not edit root CLAUDE.md from a track; root CLAUDE.md updates are the integrator's job after merge.
 - Use PORT and KIT_PARALLEL_PORT for any dev server.
 - Stay within the module scope and its declared parallel.yaml paths.
-EOF
+PROMPT_EOF
+  # Substitute the module placeholder. sed's `s` with delimiter `|` keeps
+  # the regex readable when the replacement contains slashes.
+  sed -i.bak "s|__MODULE__|$module|g" "$prompt_file"
+  rm -f "$prompt_file.bak"
 }
 
 start_tracks() {
@@ -4883,13 +4938,13 @@ start_tracks() {
         pid=$!
         ;;
       claude)
-        command -v claude >/dev/null 2>&1 || die "claude CLI not found on PATH"
-        (
-          cd "$worktree"
-          KIT_DISPATCH_TS="$ts" KIT_PARALLEL_TRACK="$module" KIT_PARALLEL_PORT="$port" PORT="$port" \
-          claude -w "track-$module" < "$prompt_file"
-        ) > "$prompt_dir/launcher.log" 2>&1 &
-        pid=$!
+        # Stage 1 only ships the codex harness through the parallel-tracks
+        # launcher. Routing claude through the dispatcher would need
+        # dispatch.sh to grow a non-codex code path (different exec, no
+        # --json/--output-schema, different log shape) — out of scope for
+        # Stage 1. Fail fast rather than silently bypass the per-track
+        # lock, JSON-mode capture, and schema validation.
+        die "harness 'claude' is not yet supported with parallel tracks (Stage 1 ships codex only). Use --harness=codex or run /project-module per-module sequentially."
         ;;
       *) die "unsupported harness: $HARNESS" ;;
     esac
