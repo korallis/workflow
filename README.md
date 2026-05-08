@@ -1,658 +1,304 @@
-# AI Project Kit — Complete Guide
+# AI Project Kit
 
-> Spec-first, AI-assisted development for solo developers and small teams.
-> Bootstrap any project so Claude Code knows exactly what to build and how.
+> Spec-first, AI-assisted development for Claude Code. Tell the AI exactly what to build before it starts building — and have a second harness watch over the work.
 
----
-
-## What This Is
-
-The AI Project Kit is a single `bootstrap.sh` script you run once in any project directory. It creates a self-contained operating system for Claude Code — a structured set of instructions, slash commands, and spec templates that transforms vague project ideas into researched, architecturally-sound, module-by-module builds.
-
-Instead of typing "build me a CRM" and hoping for the best, you type one command and Claude runs a structured workflow: research the domain, design the architecture, generate hierarchical specs, then implement module by module — committing working code at every step.
-
-The core principle, drawn from Addy Osmani's research and Boris Cherny's workflow (the creator of Claude Code himself): **tell the AI exactly what to build before it starts building**. This kit enforces that principle automatically.
+A single `bootstrap.sh` script that turns any project directory into a structured operating system for Claude Code: eleven slash commands, a dual-harness execution mode that delegates heavy implementation to Codex CLI inside a live tmux pane, automatic context preservation through compaction, and isolated security and code review via fresh-context subagents.
 
 ---
 
-## The Problem It Solves
-
-Without structure, AI-assisted development on large projects fails in predictable ways:
-
-- **Context drift** — Claude forgets earlier decisions and contradicts itself across sessions
-- **Spec-less execution** — AI generates code that "works" but solves the wrong problem
-- **No compound learning** — every session starts from zero; mistakes get repeated
-- **Architecture by accident** — modules get built without a shared data model, creating integration nightmares later
-- **The 80% wall** — projects get 80% done then stall because the AI has no map of what remains
-
-The kit solves all of these with three files Claude Code reads automatically (`CLAUDE.md`, `LEARNINGS.md`, and module-level `CLAUDE.md` files) and ten slash commands that enforce a structured workflow.
-
----
-
-## Installation
-
-### Step 1 — Get the script
-
-Download `bootstrap.sh` into your project root (or clone it from your personal template repo):
+## Quick start
 
 ```bash
-curl -O https://raw.githubusercontent.com/korallis/workflow/main/bootstrap.sh
-# or just copy it in manually
-```
+# Download with fail-fast flags (no silent redirects, no partial files)
+curl -fL -o bootstrap.sh https://raw.githubusercontent.com/korallis/workflow/main/bootstrap.sh
 
-### Step 2 — Run it
+# Inspect before executing — it's only ~4500 lines and worth a skim
+less bootstrap.sh
 
-```bash
+# Run when you're satisfied
 bash bootstrap.sh
 ```
 
-That's it. The script:
-- Detects whether you're in a **greenfield** (new) or **brownfield** (existing code) project
-- Creates the full kit structure
-- Prints what was created and your first next step
+For reproducibility, pin to a release tag once you know the kit version you trust: replace `/main/` in the URL with `/v0.1.0/` (or whichever tag) and verify against a published checksum.
 
-### What Gets Created
+Then in Claude Code:
 
+```text
+/project-init "your project idea"
 ```
-your-project/
-├── CLAUDE.md                        ← Read by Claude Code automatically on every startup
-├── LEARNINGS.md                     ← Accumulated project knowledge, grows each session
-├── .gitignore                       ← Updated with kit-safe defaults
-│
-├── .claude/
-│   ├── commands/                    ← Slash commands (thin wrappers)
-│   │   ├── project-init.md          → /project-init [idea]
-│   │   ├── project-research.md      → /project-research [topic]
-│   │   ├── project-blueprint.md     → /project-blueprint
-│   │   ├── project-spec.md          → /project-spec [module]
-│   │   ├── project-module.md        → /project-module [name]
-│   │   ├── project-review.md        → /project-review
-│   │   ├── project-status.md        → /project-status
-│   │   ├── project-deploy.md        → /project-deploy        (NEW)
-│   │   └── project-test.md          → /project-test           (NEW)
-│   │
-│   ├── hooks/                       ← Claude Code hooks
-│   │   └── pre-compact.sh            → PreCompact snapshot writer
-│   │
-│   └── skills/                      ← Skill logic + bundled templates
-│       ├── project-init/
-│       │   ├── SKILL.md
-│       │   ├── blueprint-template.md
-│       │   ├── module-spec-template.md
-│       │   └── claude-module-template.md
-│       ├── project-research/
-│       │   └── SKILL.md
-│       ├── project-blueprint/
-│       │   └── SKILL.md
-│       ├── project-spec/
-│       │   └── SKILL.md
-│       ├── project-module/
-│       │   └── SKILL.md
-│       ├── project-review/
-│       │   └── SKILL.md
-│       ├── project-status/
-│       │   └── SKILL.md
-│       ├── project-deploy/           (NEW)
-│       │   └── SKILL.md
-│       └── project-test/             (NEW)
-│           └── SKILL.md
-│
-└── specs/                           ← All generated spec documents (commit these)
-    ├── RESEARCH.md                  ← Domain research output
-    ├── MASTER_BLUEPRINT.md          ← Architecture source of truth
-    ├── ROADMAP.md                   ← Implementation order
-    └── modules/
-        └── [module-name]/
-            ├── SPEC.md              ← What this module does
-            └── CLAUDE.md            ← How to build it in this project
-```
+
+The kit will research the domain, propose modules, generate a master blueprint, write per-module specifications, and produce a roadmap — all before any code is written.
 
 ---
 
-## How It Works
+## What you get
 
-### The Operating Model
-
-When Claude Code opens your project, it reads `CLAUDE.md` automatically. This file is the project's operating manual — it tells Claude:
-
-- The prime directive: **never write code before a spec exists**
-- How to recognise a vague project idea and what to do with it
-- The full research → blueprint → spec → implement → compound workflow
-- Session rules (one task per session, plan mode first, commit often)
-- The three-tier boundary system (always do / ask first / never do)
-- How to detect the tech stack if one hasn't been chosen yet
-
-This means from the moment you open Claude Code, it already knows how to behave — even before you type anything.
-
-### The Workflow
-
-Every project follows this five-phase sequence:
-
-```
-1. RESEARCH      Understand the domain, market, users, regulations, competitors
-        ↓
-2. BLUEPRINT     Define architecture: data model, modules, API patterns, stack
-        ↓
-3. MODULE SPECS  One detailed spec per feature module (in specs/modules/)
-        ↓
-4. IMPLEMENT     One module at a time. Spec is source of truth. Commit often.
-        ↓
-5. COMPOUND      After each module: update LEARNINGS.md and CLAUDE.md
-```
-
-The kit enforces this sequence. Claude will refuse to write code until a spec exists, refuse to start a module without reading the blueprint, and always run a review after implementation to compound learnings back into the system.
-
-### Compound Learning
-
-The most powerful feature is that the system gets smarter over time within a project. After every session, `/project-review` adds new entries to `LEARNINGS.md` — mistakes made, patterns that worked, stack-specific discoveries. These get read at the start of every subsequent session, so the same mistake never happens twice.
-
-Boris Cherny (creator of Claude Code) follows this exact pattern: every mistake gets turned into a rule in `CLAUDE.md`. The kit automates this discipline.
+- **Eleven slash commands** that enforce a structured `plan → research → execute → verify → capture` workflow for every session.
+- **Dual-harness execution** (`/project-execute`) — Claude Code (Opus 4.7) plans and reviews, Codex CLI (`gpt-5.5`) implements inside a tmux pane that splits into your most-recent attached session. Pane auto-closes when Codex finishes.
+- **Isolated reviews** — `/project-security-review` and `/project-review --isolate` spawn read-only Explore subagents in fresh context so the reviewer doesn't share the implementer's blind spots.
+- **PreCompact snapshot hook** — saves plan, transcript tail, and git state into `specs/sessions/` before Claude Code compacts the conversation, with a SessionStart compact-matcher backup for the cases where PreCompact doesn't fire (Claude Code [#13572](https://github.com/anthropics/claude-code/issues/13572)).
+- **Compound learning** — `/project-review` after every session updates `LEARNINGS.md` and `CLAUDE.md` so the next session inherits what worked and avoids what didn't.
+- **Idempotent bootstrap** — re-run `bootstrap.sh` on any project (greenfield or brownfield) without losing existing files.
 
 ---
 
-## Dual-Harness Mode
+## The eleven slash commands
 
-For big module implementations you can offload execution to Codex CLI while Claude Code orchestrates:
+| Command | Purpose |
+|---|---|
+| `/project-init [idea]` | Full spec-first init: research → blueprint → module specs → roadmap. No code. |
+| `/project-research [topic]` | Deep research on domain, technology, regulation. |
+| `/project-blueprint` | Generate or regenerate the master architecture document. |
+| `/project-spec [module]` | Create or update a detailed module specification (data model, API, UI, business logic). |
+| `/project-module [module]` | Single-harness implementation: Claude plans and builds in this session. |
+| `/project-execute [module]` | Dual-harness implementation: Claude plans, Codex CLI builds in a live tmux pane. |
+| `/project-review [--isolate]` | Capture session learnings into `LEARNINGS.md` / `CLAUDE.md`. `--isolate` adds an Explore-agent code-review pass with no parent-context bias. |
+| `/project-security-review` | Independent security review via isolated Explore subagent. UK GDPR, healthcare, OWASP-style checklist. |
+| `/project-status` | Dashboard: which specs exist, what's been implemented, what's next. |
+| `/project-test` | Comprehensive test pass — unit, type, lint, visual. |
+| `/project-deploy` | Pre-deploy checks, deploy, verify with browser automation. |
 
-| Mode | Skill | Plan & Review | Execute |
-| --- | --- | --- | --- |
-| Single-harness | `/project-module [name]` | Claude Code | Claude Code |
-| Dual-harness | `/project-execute [name]` | Claude Code | Codex CLI (`gpt-5.5`) |
+---
 
-Dual-harness streams Codex output into a tmux pane that splits into your most-recent attached tmux session, so you see implementation happen live next to your Claude Code window.
+## Dual-harness execution
 
-**Prerequisites**:
+`/project-execute [module]` is the architectural centrepiece. Claude Code is excellent at planning, reviewing, and remembering across sessions; Codex CLI (`gpt-5.5`) is excellent at heavy implementation. The kit runs them together:
+
+```text
+You ─► /project-execute auth
+       │
+       ├─ Claude reads the module spec, blueprint, and CLAUDE.md
+       ├─ Claude builds a dispatch prompt
+       │
+       └─ .claude/lib/dispatch.sh:
+              ├─ auth + model preflight (with timeout)
+              ├─ single-flight lock (mkdir-based, portable)
+              ├─ tmux split into your attached session, tail -f log
+              ├─ codex exec gpt-5.5 medium (prompt via stdin, real exit code)
+              └─ pane auto-closes on completion (sentinel-based)
+       │
+       └─ Claude reads the scrubbed log → summarises → runs review skill
+```
+
+Output streams live into the pane. When Codex finishes, the dispatcher writes a unique sentinel and the pane closes itself — no manual cleanup. If no tmux client is attached, output streams inline in Claude's transcript instead.
+
+**Prerequisites:**
 
 - `npm install -g @openai/codex` (Codex CLI 0.128+ tested).
-- Authenticate. Choose one:
-  - `codex login` — ChatGPT auth (recommended for `gpt-5.5` access).
-  - `export OPENAI_API_KEY=…` — API-key auth. `gpt-5.5` requires Tier 1+ on your OpenAI org; if your tier doesn't include it, the preflight surfaces a model-availability error before opening any panes.
-- An attached tmux client. Easiest: launch Claude Code from inside tmux. Also works: have any other terminal attached to a tmux session — dispatch.sh detects via `tmux list-clients`. Without an attached client, output streams inline in Claude's transcript.
+- Authenticate: `codex login` (recommended for `gpt-5.5` access without API tier requirements) or `export OPENAI_API_KEY=…` (`gpt-5.5` requires Tier 1+).
+- An attached tmux client somewhere on the machine. Easiest: run Claude Code from inside tmux.
 - macOS: `brew install coreutils` (provides `gtimeout`, used by the dispatcher).
-
-**How it routes**:
-
-1. Claude validates `$ARGUMENTS` as a kebab-case module name and reads `CLAUDE.md`, `specs/MASTER_BLUEPRINT.md`, `specs/modules/<name>/SPEC.md`, and the module's `CLAUDE.md`. Aborts with actionable instructions if any are missing.
-2. Claude writes a dispatch prompt to `.kit-orchestration/exec-<name>-<timestamp>-prompt.md`.
-3. `.claude/lib/dispatch.sh` runs an auth + model-availability preflight, acquires a single-flight lock, opens a tmux pane with `tail -f` on the log (or streams inline if no client is attached), then runs `codex exec` as a child process with the prompt piped via stdin.
-4. Codex implements the module phase-by-phase, committing on green tests. It does not push.
-5. Claude reads `.kit-orchestration/execute-<name>-<timestamp>-last.md` directly and the run log via `bash .claude/lib/scrub-secrets.sh <log>` (so any secrets Codex echoed are redacted before re-entering Claude's context), summarises, and reads `.claude/skills/project-review/SKILL.md` to capture learnings.
-
-The dispatcher is observation-only on tmux — Codex's exit code comes from the real child process, not from `tmux send-keys`. macOS-portable (uses `gtimeout` and `mkdir`-based locks; no `flock` or GNU-only `timeout` dependency).
 
 ---
 
-## Tool Integrations
+## Isolated reviews
 
-The skills in this kit leverage Claude's MCP (Model Context Protocol) tool integrations to extend capabilities:
+Both `/project-security-review` and `/project-review --isolate` use the same isolation pattern: spawn a read-only Explore subagent with the diff and a checklist, and merge its findings back into the parent session's output.
 
-- **Exa** — Web search and code example discovery. Used by `/project-research` to find domain knowledge and implementation patterns from across the web and GitHub.
-- **Ref** — Documentation lookup. Used to find official docs and technical references without bloat.
-- **Playwright / Chrome** — Visual testing and browser automation. Used by `/project-test` to validate visual rendering and UI behavior.
-- **Vercel** — Deployment verification. Used by `/project-deploy` to verify builds, check environment variables, and confirm production readiness.
+The Explore subagent:
 
-These tools are invoked automatically by the skill logic — you don't need to configure anything beyond the skills themselves.
+- Has a fresh context window — no exposure to the planning or implementation discussion.
+- Has no edit/write tools by default — it cannot accidentally modify the working tree.
+- Reviews only what was actually changed, against an explicit checklist.
+
+This matters because reviewers who participated in implementation tend to validate the assumptions that drove the implementation. An Explore subagent reading the diff alone has different blind spots — exactly what review is for.
+
+`/project-security-review`'s checklist covers authentication, authorisation, input/output handling, CSRF, SSRF, webhook signatures, file uploads, client-bundle secret hygiene, GDPR PII persistence, audit logging, healthcare-domain compliance, dependencies, and operational hygiene.
+
+`/project-review --isolate` is the lighter cousin — an unbiased code-quality pass over the diff. The session-learnings capture (`LEARNINGS.md` / `CLAUDE.md` updates) still happens in the parent context because that work needs parent-session memory.
 
 ---
 
 ## Hooks
 
-Claude Code hooks are configured in `.claude/settings.json` and live in `.claude/hooks/`. The kit ships `pre-compact.sh`, a PreCompact hook that writes recovery snapshots into `specs/sessions/` before conversation compaction: the latest orchestration plan, a transcript tail when Claude provides `transcript_path`, and recent git activity.
+`.claude/hooks/pre-compact.sh` fires before Claude Code compacts the conversation, writing three companion snapshot files into `specs/sessions/`:
 
-A SessionStart `compact` hook provides a backup path by printing the latest snapshot when a compacted session resumes. Claude Code issue [#13572](https://github.com/anthropics/claude-code/issues/13572) reports that PreCompact may not fire reliably for `/compact` on some versions, so treat snapshots as best-effort recovery rather than a hard guarantee.
+- `<TS>-plan.md` — copy of the most recent `.kit-orchestration/pr*-plan.md`.
+- `<TS>-transcript-tail.md` — last 50 events from the transcript JSONL.
+- `<TS>-git.md` — branch, last 10 commits, working-tree status.
 
----
+All snapshots are written with `umask 077` and `chmod 600` for defence in depth on shared systems. The `specs/sessions/` directory is `chmod 700`.
 
-## The Slash Commands
+`.claude/settings.json` wires the PreCompact hook plus a SessionStart `compact` matcher that prints the latest snapshot path on session resume — a backup recovery path for [#13572](https://github.com/anthropics/claude-code/issues/13572) where PreCompact doesn't fire reliably for `/compact` on some Claude Code versions. Both hooks resolve their commands via `$CLAUDE_PROJECT_DIR` so they work even when the session cwd has changed.
 
-### Skill Frontmatter
-
-Skills may include `effort: high|medium|low|max` in their YAML frontmatter. This is a Claude-Code-specific hint for model effort selection and is silently ignored by other harnesses.
-
----
-
-### `/project-init [idea]`
-
-**Use when:** Starting any new project, or adding a major new feature area.
-
-This is the main entry point. Give it any project description — as vague or specific as you like — and it runs the full seven-phase initialisation:
-
-1. Clarifies ambiguities (up to 3 targeted questions if needed)
-2. Researches the domain (market, users, competitors, regulations)
-3. Identifies and lists the core modules for your approval
-4. Generates `specs/MASTER_BLUEPRINT.md` (complete architecture)
-5. Generates `specs/modules/[module]/SPEC.md` for all MVP modules
-6. Generates `specs/modules/[module]/CLAUDE.md` for all MVP modules
-7. Creates `specs/ROADMAP.md` with recommended implementation order
-
-**Output:** A complete spec hierarchy ready for implementation. No code written.
+Snapshots are gitignored — they're ephemeral runtime artefacts.
 
 ---
 
-### `/project-research [topic]`
+## Compound learning
 
-**Use when:** You need deep research on a specific domain, technology, regulation, or competitor before making architectural decisions.
+The killer feature, drawn from Boris Cherny's workflow: **every session updates `LEARNINGS.md` and `CLAUDE.md`**. New modules don't repeat old mistakes; system-wide patterns become consistent; complex gotchas are documented for future sessions.
 
-Runs a structured web-search research session and saves findings to `specs/research/[topic].md`. Also updates `LEARNINGS.md` with anything that directly affects implementation.
+Run `/project-review` at the end of every session (or `/project-review --isolate` for an extra unbiased code-review pass). It captures:
 
-Examples:
+- Patterns that worked, with concrete code references.
+- Mistakes made and how they were fixed.
+- Stack-specific learnings (e.g. Next.js gotchas, Tailwind quirks).
+- Open questions for next session.
+
+Future sessions read these before starting work, so the kit gets sharper with every cycle.
+
+---
+
+## How it works
+
+```text
+your-project/
+├── CLAUDE.md                       Operating model, read by Claude on every prompt
+├── LEARNINGS.md                    Accumulated patterns, mistakes, decisions
+├── .claude/
+│   ├── settings.json               Hook configuration (PreCompact, SessionStart)
+│   ├── commands/                   Thin slash-command wrappers
+│   │   ├── project-init.md
+│   │   ├── project-execute.md
+│   │   └── …
+│   ├── skills/                     Skill instructions + bundled templates
+│   │   ├── project-init/
+│   │   │   ├── SKILL.md
+│   │   │   ├── blueprint-template.md
+│   │   │   ├── module-spec-template.md
+│   │   │   └── claude-module-template.md
+│   │   ├── project-execute/
+│   │   ├── project-security-review/
+│   │   └── …
+│   ├── lib/                        Shared infrastructure
+│   │   ├── dispatch.sh             Codex dispatcher
+│   │   └── scrub-secrets.sh        Read-path log redactor
+│   └── hooks/
+│       └── pre-compact.sh          Pre-compaction snapshotter
+├── specs/
+│   ├── MASTER_BLUEPRINT.md         Architecture source of truth
+│   ├── ROADMAP.md                  Implementation order
+│   ├── modules/[name]/
+│   │   ├── SPEC.md                 What to build
+│   │   └── CLAUDE.md               How to build it in this project
+│   └── sessions/                   PreCompact snapshots (gitignored, 0600)
+└── .kit-orchestration/             Plan/validation/execution artefacts
 ```
-/project-research "UK GDPR requirements for storing student data"
-/project-research "MIS integration APIs — SIMS, Bromcom, Arbor"
-/project-research "multi-tenant SaaS patterns with Postgres row-level security"
-```
+
+Every session follows the same five-phase sequence: **plan → research (if needed) → execute → verify → capture**. The slash commands enforce this — they aren't suggestions.
 
 ---
 
-### `/project-blueprint`
+## Skill frontmatter
 
-**Use when:** You need to generate or regenerate the master architecture document. Also useful mid-project when major architectural decisions need to be revised.
+`effort: high|medium|low|max` is a Claude-Code-extended skill frontmatter field that signals the appropriate reasoning budget for a skill. Applied to:
 
-Reads all existing specs and research, then produces or updates `specs/MASTER_BLUEPRINT.md` — the single authoritative source for stack decisions, data models, API patterns, and module relationships.
+- `project-init` (heavy planning + research)
+- `project-blueprint` (architectural reasoning)
+- `project-execute` (orchestration of a downstream agent)
+- `project-security-review` (deep checklist review)
 
----
-
-### `/project-spec [module-name]`
-
-**Use when:** Creating or updating the spec for a specific module.
-
-Reads the master blueprint to understand the overall architecture, then produces:
-- `specs/modules/[module-name]/SPEC.md` — full module spec (user stories, data model, APIs, UI screens, business rules, acceptance criteria)
-- `specs/modules/[module-name]/CLAUDE.md` — module-specific implementation guide
-
-Always asks for approval before saving.
+Other harnesses silently ignore unknown frontmatter, so this is portable by omission.
 
 ---
 
-### `/project-module [module-name]`
+## Example flow
 
-**Use when:** Ready to implement a module that already has an approved spec.
-
-Before writing a single line of code, it reads:
-1. `specs/MASTER_BLUEPRINT.md`
-2. `specs/modules/[module-name]/SPEC.md`
-3. `specs/modules/[module-name]/CLAUDE.md`
-4. `LEARNINGS.md`
-
-Then enters Plan Mode — writes out the full implementation plan and waits for your approval before coding. Implements incrementally, running tests and committing after each logical chunk.
-
----
-
-### `/project-review`
-
-**Use when:** At the end of every session, or after completing any task.
-
-Captures what was done, what wasn't, and what was learned — then writes new entries to `LEARNINGS.md` and updates `CLAUDE.md` with any new rules. Recommends the next task based on the roadmap.
-
-This command is what makes the system compound. Don't skip it.
-
----
-
-### `/project-status`
-
-**Use when:** You want a full project dashboard — what specs exist, what's been implemented, what's next.
-
-Produces a clean status table showing every module's state (no spec / spec exists / in progress / complete) and recommends the next task.
-
----
-
-### `/project-deploy`
-
-**Use when:** Ready to deploy to production or need to verify deployment readiness.
-
-Verifies the build succeeds, checks environment variables are set, validates critical integrations are configured, and performs a test deployment. Uses Vercel integration to confirm production readiness.
-
-**Output:** Deployment verification report and promotion to production, or detailed feedback on blockers.
-
----
-
-### `/project-test`
-
-**Use when:** Need comprehensive test coverage — unit tests, type checking, linting, and visual validation.
-
-Runs the full test suite: unit tests, type checking (TypeScript), linting, and visual regression testing using browser automation. Generates a coverage report and flags any regressions.
-
-**Output:** Test results, coverage report, visual diff comparisons (if applicable).
-
----
-
-### `/project-execute [module]`
-
-**Use when:** A module has approved `SPEC.md` and `CLAUDE.md` files and you want Codex CLI to do the implementation while Claude Code orchestrates and reviews.
-
-This is the dual-harness alternative to `/project-module`. Claude reads the specs, builds a dispatch prompt, and hands it to Codex CLI (`gpt-5.5`, medium reasoning effort) inside a tmux pane that splits into your most-recent attached session. Codex implements phase by phase, committing on green tests; it does not push. When Codex returns, Claude reads back the run log and last-message through `scrub-secrets.sh` (so any credentials Codex echoed are redacted before re-entering Claude's context), summarises the outcome, and runs the review skill to update `LEARNINGS.md`.
-
-Prerequisites: `npm install -g @openai/codex`, then either `codex login` (ChatGPT auth — recommended for `gpt-5.5` access) or `OPENAI_API_KEY` on a tier that supports `gpt-5.5`. An attached tmux client is auto-detected via `tmux list-clients`. See the **Dual-Harness Mode** section above for the full routing description.
-
-**Output:** Module implementation committed to the branch (commits authored by the executor); a scrubbed log under `.kit-orchestration/`; learnings appended to `LEARNINGS.md`. The user reviews and pushes.
-
----
-
-### `/project-security-review`
-
-**Use when:** You want an independent security review of pending changes before merge, especially for auth, data persistence, PII, audit logging, or UK GDPR-sensitive work.
-
-Captures the current diff, launches a fresh read-only Explore Agent with the project security checklist, and returns a severity-bucketed markdown report. The Agent sees the diff and checklist only, so it is not biased by the implementation session.
-
-**Output:** Security review report only. This command does not modify code.
-
----
-
-## Example Workflow — UK Education CRM
-
-Here is a complete real-world walkthrough from vague idea to first working module.
-
----
-
-### Day 1 — Initialisation
-
-You open Claude Code in a fresh directory and run the bootstrap:
+Day 1, fresh repo, you want to build a CRM:
 
 ```bash
-mkdir crm-edu-uk && cd crm-edu-uk
-bash bootstrap.sh
+$ bash bootstrap.sh
+$ claude
+> /project-init "CRM for the UK education sector"
 ```
 
-Output confirms greenfield detection. Then in Claude Code:
+Claude:
 
-```
-/project-init "CRM solution for the UK education market"
-```
+1. Asks up to three clarifying questions (target users, core data, integrations).
+2. Researches the domain via Exa (market, competitors, regulations) and Ref (framework docs).
+3. Proposes core modules — auth, schools, pupils, parents, billing, comms, reports, settings.
+4. Writes `specs/MASTER_BLUEPRINT.md` (stack, data flow, integration points, risk assessment).
+5. Writes `specs/modules/[name]/SPEC.md` and `specs/modules/[name]/CLAUDE.md` for each module.
+6. Writes `specs/ROADMAP.md` (auth → schools → pupils → …).
+7. Stops. No code written.
 
-**Phase 1 — Clarification**
-
-Claude asks three targeted questions:
-
-> 1. Who are the primary users — MAT (Multi-Academy Trust) administrators, individual school business managers, or both?
-> 2. What's the core problem? Tracking relationships with suppliers, managing admissions, or something else?
-> 3. Any existing systems that need to integrate with (SIMS, Arbor, Bromcom, Xero)?
-
-You answer:
-> MAT administrators and school business managers. Core problem is managing supplier and contractor relationships — procurement, contracts, invoicing. Needs to integrate with Xero for invoicing.
-
-**Phase 2 — Domain Research**
-
-Claude researches and saves `specs/RESEARCH.md` covering:
-- UK education procurement landscape (ESFA guidelines, procurement frameworks like Crown Commercial Service)
-- MAT organisational structures and decision-making hierarchies
-- GDPR considerations for supplier data in the education sector
-- Xero API capabilities for UK education invoicing
-- Key competitors (SchoolBiz, ParentMail, custom spreadsheets)
-
-**Phase 3 — Module Identification**
-
-Claude proposes modules and asks for approval:
-
-| Module | Priority | Description |
-|--------|----------|-------------|
-| `organisations` | Core | MATs and schools — the account hierarchy |
-| `contacts` | Core | Individuals at supplier organisations |
-| `suppliers` | Core | Supplier profiles, accreditations, categories |
-| `contracts` | Core | Contract lifecycle — draft, active, expired |
-| `invoicing` | Core | Invoice tracking + Xero sync |
-| `procurement` | Core | Purchase requests and approval workflow |
-| `documents` | Core | Contract documents, compliance certs |
-| `notifications` | V1.1 | Contract expiry alerts, approval reminders |
-| `reporting` | V1.1 | Spend analysis, supplier performance |
-| `portal` | Future | Supplier self-service portal |
-
-You approve with one change: move `documents` to V1.1.
-
-**Phase 4 — Master Blueprint**
-
-Claude detects no stack exists and asks the four stack questions:
-
-> 1. What type of application? Web app — I need a full-stack Next.js build
-> 2. Stack preferences? Next.js App Router, TypeScript, Bun, shadcn/ui, Prisma, PostgreSQL
-> 3. Scale? Small SaaS — initially 20-50 MATs
-> 4. Deployment? Vercel + Supabase
-
-Claude generates `specs/MASTER_BLUEPRINT.md` including:
-- Full data model (MAT → School → Contact relationships, Contract ↔ Supplier ↔ Invoice)
-- API pattern (Next.js Server Actions + tRPC for complex queries)
-- Auth approach (NextAuth.js with organisation-scoped sessions)
-- Multi-tenancy model (organisation_id on every table, RLS in Postgres)
-- Xero OAuth2 integration pattern
-- shadcn/ui component conventions
-
-**Phase 5-6 — Module Specs Generated**
-
-Claude generates `SPEC.md` and `CLAUDE.md` for all 7 Core modules. Example for `contracts`:
-
-`specs/modules/contracts/SPEC.md` covers:
-- 6 user stories (create contract, track renewal dates, attach documents, approval workflow, Xero sync on completion, expiry alerts)
-- Data model: `Contract` entity with status enum, `ContractLineItem`, `ContractParty`
-- 8 API endpoints (CRUD + archive + approve + xero-sync)
-- 3 UI screens (contract list, contract detail, contract creation wizard)
-- Business rules (approval thresholds by value, ESFA compliance flags)
-- Acceptance criteria (12 testable criteria)
-
-**Phase 7 — Roadmap**
-
-`specs/ROADMAP.md` recommends this order (with rationale):
-
-```
-1. organisations    ← Foundation — everything belongs to an org
-2. contacts         ← Depends on organisations
-3. suppliers        ← Depends on contacts
-4. contracts        ← Core value prop, depends on suppliers
-5. procurement      ← Depends on contracts
-6. invoicing        ← Depends on contracts + Xero integration
-```
-
-Total session time: approximately 25-35 minutes. No code written yet.
+Day 2 starts with `/project-module auth` (or `/project-execute auth` for dual-harness). Claude knows exactly what to build because the spec is concrete. At the end of the session, run `/project-review` to compound the learnings into the kit for the next module.
 
 ---
 
-### Day 2 — First Module
+## Brownfield projects
 
-You open Claude Code. It reads `CLAUDE.md` automatically.
+Run `bash bootstrap.sh` in an existing repository. The script detects existing code, creates `.claude/`, `LEARNINGS.md`, and a stub `CLAUDE.md` for you to fill in with what already exists. Then:
 
-```
-/project-status
-```
+- Run `/project-blueprint` to generate the architecture document retroactively from the existing code.
+- Run `/project-spec [module]` for any subsystem you want to spec without disturbing the rest of the codebase.
+- Use `/project-module` or `/project-execute` for new feature areas.
 
-Output:
-
-```
-PROJECT STATUS — 2026-03-13
-================================
-Research:     ✅ Complete
-Blueprint:    ✅ Complete
-Roadmap:      ✅ Complete
-
-MODULES:
-  organisations    ✅ Spec  ❌ Not started
-  contacts         ✅ Spec  ❌ Not started
-  suppliers        ✅ Spec  ❌ Not started
-  contracts        ✅ Spec  ❌ Not started
-  procurement      ✅ Spec  ❌ Not started
-  invoicing        ✅ Spec  ❌ Not started
-
-NEXT RECOMMENDED TASK:
-  /project-module organisations
-```
-
-```
-/project-module organisations
-```
-
-Claude reads all four prerequisite files, then enters Plan Mode:
-
-> **Implementation Plan — organisations module**
->
-> Files to create:
-> - `prisma/schema.prisma` — Organisation, School models
-> - `src/modules/organisations/` — Server actions, types, validation
-> - `src/app/(dashboard)/organisations/` — List page, detail page
-> - `tests/modules/organisations/` — Unit tests for server actions
->
-> Order: schema → server actions → tests → UI
-> Shall I proceed?
-
-You approve. Claude implements, runs tests after each chunk, commits:
-
-```
-feat(organisations): add Prisma schema for Organisation and School
-feat(organisations): add server actions for CRUD operations
-feat(organisations): add organisation list page with search/filter
-feat(organisations): add organisation detail page with school roster
-```
-
-```
-/project-review
-```
-
-Claude adds to `LEARNINGS.md`:
-
-```markdown
-## Patterns That Work
-- Server actions with Zod validation: define schema in shared
-  `src/lib/validations/[module].ts`, import in both action and form component
-
-## Mistakes & Fixes
-- Prisma relation naming: use explicit `@relation` names when a model
-  has multiple relations to the same table — prevents ambiguous relation errors
-
-## Stack-Specific Notes
-- Supabase RLS + Prisma: must set `SET LOCAL app.current_org_id` in a
-  Prisma middleware on every query to activate row-level security
-```
-
-And updates `CLAUDE.md` with one new rule:
-```markdown
-- ✅ Always: Set `app.current_org_id` via Prisma middleware before any query
-```
+The kit is additive on brownfield repos — nothing existing is overwritten.
 
 ---
 
-### Day 3 — Second Module
+## Sharing the kit
 
-You open Claude Code. It reads `CLAUDE.md` (now with the RLS rule) and `LEARNINGS.md` (now with the Prisma relation tip). It already knows not to make the mistakes from Day 2.
-
-```
-/project-module contacts
-```
-
-The RLS middleware is already in place from the previous module. The Prisma relation naming is done correctly first time. The compound effect has already kicked in.
+Keep `bootstrap.sh` in your dotfiles or a personal template repository. Run it in any new project to bring the same workflow over. When you discover better patterns, update upstream — every future project inherits the improvement immediately.
 
 ---
 
-### Week 2 — Mid-Project Research Spike
-
-You realise you need to understand Xero's UK-specific tax handling before designing the invoicing module properly.
-
-```
-/project-research "Xero API UK VAT handling and invoice webhooks"
-```
-
-Claude researches, saves findings to `specs/research/xero-vat.md`, and updates `LEARNINGS.md`. When you later run `/project-spec invoicing`, Claude reads this research automatically and designs the data model with correct VAT fields and webhook handling from the start.
-
----
-
-### Month 2 — Checkpoint
-
-```
-/project-status
-```
-
-```
-PROJECT STATUS — 2026-04-15
-================================
-Research:     ✅ Complete (+ 3 research spikes)
-Blueprint:    ✅ Complete
-Roadmap:      ✅ Complete
-
-MODULES:
-  organisations    ✅ Spec  ✅ Complete
-  contacts         ✅ Spec  ✅ Complete
-  suppliers        ✅ Spec  ✅ Complete
-  contracts        ✅ Spec  ✅ Complete
-  procurement      ✅ Spec  🔨 In Progress
-  invoicing        ✅ Spec  ❌ Not started
-
-LEARNINGS.md: 23 entries (4 open questions)
-
-NEXT RECOMMENDED TASK:
-  /project-module invoicing
-```
-
----
-
-## Key Principles to Keep in Mind
-
-### One session = one task
-
-Never try to implement multiple modules in a single session. Long sessions degrade quality as context fills. If you've had to correct Claude on the same issue twice in a session, run `/project-review` then `/clear` and start fresh.
-
-### The spec is the source of truth — not the code
-
-If implementation diverges from the spec (for legitimate reasons), update the spec. Specs must stay in sync with code. Never let them drift apart.
-
-### Commit paranoia is good
-
-Every working, tested state should be a commit. Commits are your save points. If a session goes wrong, you can always roll back to the last good commit and start fresh without losing work.
-
-### Context at 60%? Compact.
-
-Watch your context usage in Claude Code. When it hits around 60%, run `/compact` before continuing. This prevents the quality degradation that comes from an overfull context window.
-
-### The compound effect is the whole point
-
-The system gets measurably smarter with each session because every mistake becomes a rule and every pattern gets documented. After 4-5 modules, Claude is essentially a specialist in your specific codebase — it knows your patterns, your conventions, your gotchas. This is the Boris Cherny insight: treat CLAUDE.md as a living document where every mistake paid in Day 1 pays dividends for the rest of the project.
-
----
-
-## Brownfield Projects
-
-When you run `bootstrap.sh` in a directory with existing source files, it automatically switches to brownfield mode and creates an additional file: `specs/existing-system/AUDIT.md`.
-
-Fill this in before running any slash commands. It captures what already exists, what works well (don't touch it), known problems, and constraints. This prevents Claude from "helpfully" rewriting working code or introducing patterns that conflict with your existing architecture.
-
-In brownfield mode, the workflow shifts slightly:
-
-1. Fill in `AUDIT.md` manually
-2. Run `/project-status` to understand the current state
-3. Use `/project-spec [module]` to write spec *deltas* for new features (what's being ADDED or CHANGED, not a from-scratch spec)
-4. Use `/project-research` for any unfamiliar areas of the existing codebase
-
----
-
-## Sharing the Kit Across Projects
-
-The most efficient setup is to keep `bootstrap.sh` in a personal GitHub repo (e.g. `your-username/ai-project-kit`) and pin it to a version. Then for every new project:
-
-```bash
-curl -sO https://raw.githubusercontent.com/your-username/ai-project-kit/main/bootstrap.sh
-bash bootstrap.sh && rm bootstrap.sh
-```
-
-As you discover better patterns — in your CLAUDE.md, your slash commands, your templates — update the source repo. Every future project benefits from every past project's learnings, even before a single line of code is written.
-
----
-
-## Quick Reference
+## Quick reference
 
 | Command | What it does |
-|---------|-------------|
-| `bash bootstrap.sh` | One-time setup, auto-detects green/brownfield |
-| `/project-init [idea]` | Research → blueprint → all specs → roadmap |
-| `/project-research [topic]` | Deep research, saved to specs/research/ |
-| `/project-blueprint` | Generate/regenerate master architecture |
-| `/project-spec [module]` | Create or update a module spec |
-| `/project-module [name]` | Plan + implement a module against its spec |
-| `/project-review [--isolate]` | Capture learnings, compound into CLAUDE.md; `--isolate` adds a fresh Explore-agent code-review pass |
-| `/project-status` | Full project dashboard |
-| `/project-deploy` | Verify deployment readiness and promote to production |
-| `/project-test` | Run comprehensive tests (unit, type, lint, visual) |
-| `/project-execute [name]` | Dual-harness: Claude plans/reviews, Codex CLI (gpt-5.5) implements in a tmux pane |
-| `/project-security-review` | Independent read-only security review of pending changes |
+|---|---|
+| `bash bootstrap.sh` | One-time setup (idempotent on re-runs) |
+| `/project-init [idea]` | Full spec-first init |
+| `/project-research [topic]` | Deep research, saved under `specs/research/` |
+| `/project-blueprint` | Architecture document |
+| `/project-spec [module]` | Per-module spec |
+| `/project-module [name]` | Single-harness implementation |
+| `/project-execute [name]` | Dual-harness implementation (Codex CLI) |
+| `/project-review [--isolate]` | Session learnings + optional isolated code review |
+| `/project-security-review` | Isolated security review (Explore subagent) |
+| `/project-status` | Dashboard |
+| `/project-test` | Tests |
+| `/project-deploy` | Deploy + verify |
 
 | File | Purpose |
-|------|---------|
-| `CLAUDE.md` | Operating model — read by Claude Code automatically |
-| `LEARNINGS.md` | Accumulated project knowledge |
-| `specs/MASTER_BLUEPRINT.md` | Architecture source of truth |
-| `specs/ROADMAP.md` | Implementation order and priorities |
-| `specs/modules/[x]/SPEC.md` | What a module does |
+|---|---|
+| `CLAUDE.md` | Operating model |
+| `LEARNINGS.md` | Accumulated knowledge |
+| `specs/MASTER_BLUEPRINT.md` | Architecture |
+| `specs/ROADMAP.md` | Implementation order |
+| `specs/modules/[x]/SPEC.md` | What to build |
 | `specs/modules/[x]/CLAUDE.md` | How to build it in this project |
+| `specs/sessions/<TS>-*.md` | PreCompact snapshots (gitignored) |
+| `.claude/lib/dispatch.sh` | Codex dispatcher |
+| `.claude/lib/scrub-secrets.sh` | Read-path log scrubber |
+| `.claude/hooks/pre-compact.sh` | Pre-compaction snapshotter |
+| `.claude/settings.json` | Hook configuration |
+| `.kit-orchestration/` | Plan/validation/execution artefacts (logs gitignored) |
+
+| Env knob (dispatch.sh) | Effect |
+|---|---|
+| `KIT_TMUX_SESSION` | Override which tmux session to split into |
+| `KIT_TMUX_SPLIT` | `h` (default) or `v` for split direction |
+| `KIT_NO_TMUX=1` | Force inline streaming (no tmux pane) |
+| `KIT_CODEX_TIMEOUT` | Hard timeout in seconds (default 1800) |
+| `KIT_AUTH_PREFLIGHT_SECONDS` | Preflight timeout (default 15) |
+| `KIT_ALLOW_CONCURRENT=1` | Bypass single-flight lock |
+| `KIT_CODEX_SANDBOX` | Override sandbox mode (default `workspace-write`) |
+
+---
+
+## Operating principles
+
+- **One session, one task.** Don't start a second until the first is captured and ready for handoff.
+- **The spec is the source of truth.** Code conforms to the spec, not vice versa. If implementation reveals a gap, update the spec.
+- **Commit early, commit often.** `/project-execute` commits Codex's work after every green test on its branch; the user reviews and pushes.
+- **Compound learning is the whole point.** Run `/project-review` at the end of every session.
+- **British English** in user-facing prose.
+
+---
+
+## Stack neutrality
+
+Slash commands and templates are stack-agnostic. The kit infers your stack from `MASTER_BLUEPRINT.md` and adapts. Tested on Next.js + PostgreSQL + Vercel; designed to work with any modern web/API stack (Python, Go, Rust, Java backends; React/Vue/Svelte/SolidJS frontends).
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for a record of shipped changes (Keep-a-Changelog format).
+
+---
+
+**Reference:** Boris Cherny's "tell the AI exactly what to build before it starts building" workflow + Addy Osmani's compound-learning research are the conceptual foundation. The kit makes both automatic.
