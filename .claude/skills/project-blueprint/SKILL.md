@@ -1,6 +1,7 @@
 ---
 name: project-blueprint
 description: "Generate or regenerate the master architecture document (specs/MASTER_BLUEPRINT.md) — the single source of truth for tech stack, data model, API patterns, auth, UI conventions, and module relationships. Use when starting architecture, changing stack decisions, or after significant research that affects the technical approach."
+effort: high
 ---
 
 # Project Blueprint Skill

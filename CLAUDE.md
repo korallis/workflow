@@ -28,6 +28,7 @@ Sessions are triggered by explicit commands that signal intent:
 | `/project-spec [module]` | Specification mode — detailed module design |
 | `/project-module [name]` | Implementation mode — code and tests |
 | `/project-execute [module]` | Dual-harness mode: hand a fully-specced module to Codex CLI for implementation while Claude orchestrates. Live tmux pane in your most-recent attached session. |
+| `/project-security-review` | Independent Agent-based security review of pending changes — UK GDPR / healthcare focus. |
 | `/project-review` | Wrap-up mode — capture learnings |
 | `/project-status` | Dashboard — show current state |
 | `/project-deploy` | Deployment mode — deploy and verify |
@@ -120,6 +121,7 @@ Portability: dispatch.sh works on Linux and macOS. Requires GNU coreutils (`time
 | `/project-deploy` | `/project-deploy` | Deploy to staging/production and verify |
 | `/project-test` | `/project-test` | Comprehensive test pass across all modules |
 | `/project-execute` | `/project-execute [module]` | Dual-harness mode: hand a fully-specced module to Codex CLI for implementation while Claude orchestrates |
+| `/project-security-review` | `/project-security-review` | Independent Agent-based security review of pending changes — UK GDPR / healthcare focus. |
 
 ---
 
@@ -142,6 +144,10 @@ Claude has access to specialized tools for research, testing, and deployment. Us
 
 ### Frontend Development
 - **web-artifacts-builder skill** — React, Tailwind CSS, and shadcn/ui component patterns. Consult when building frontend modules.
+
+### Hooks
+- **PreCompact snapshot hook** (`.claude/hooks/pre-compact.sh`) — Writes recovery snapshots into `specs/sessions/` before conversation compaction. Configured by `.claude/settings.json`.
+- **SessionStart compact backup** — On compacted-session resume, prints the latest snapshot path when one exists. Claude Code issue #13572 means PreCompact may not fire reliably for `/compact` on some versions, so treat this as best-effort recovery.
 
 ### Rule: Research Before Implementing
 **Before implementing any technical pattern you're uncertain about, use Ref or Exa to look up current documentation.** Don't rely on potentially outdated training knowledge for version-specific API details. This ensures consistency with the latest tooling and avoids rework.

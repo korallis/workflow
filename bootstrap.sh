@@ -35,6 +35,7 @@ echo ""
 # Create directory structure
 echo -e "${BOLD}Creating kit structure...${RESET}"
 mkdir -p .claude/commands
+mkdir -p .claude/hooks
 mkdir -p .claude/lib
 mkdir -p .claude/skills/project-init
 mkdir -p .claude/skills/project-research
@@ -43,11 +44,13 @@ mkdir -p .claude/skills/project-spec
 mkdir -p .claude/skills/project-module
 mkdir -p .claude/skills/project-execute
 mkdir -p .claude/skills/project-review
+mkdir -p .claude/skills/project-security-review
 mkdir -p .claude/skills/project-status
 mkdir -p .claude/skills/project-deploy
 mkdir -p .claude/skills/project-test
 mkdir -p .kit-orchestration
 mkdir -p specs/modules
+mkdir -p specs/sessions
 
 # =============================================================================
 # CLAUDE.md
@@ -83,6 +86,7 @@ Sessions are triggered by explicit commands that signal intent:
 | `/project-spec [module]` | Specification mode — detailed module design |
 | `/project-module [name]` | Implementation mode — code and tests |
 | `/project-execute [module]` | Dual-harness mode: hand a fully-specced module to Codex CLI for implementation while Claude orchestrates. Live tmux pane in your most-recent attached session. |
+| `/project-security-review` | Independent Agent-based security review of pending changes — UK GDPR / healthcare focus. |
 | `/project-review` | Wrap-up mode — capture learnings |
 | `/project-status` | Dashboard — show current state |
 | `/project-deploy` | Deployment mode — deploy and verify |
@@ -175,6 +179,7 @@ Portability: dispatch.sh works on Linux and macOS. Requires GNU coreutils (`time
 | `/project-deploy` | `/project-deploy` | Deploy to staging/production and verify |
 | `/project-test` | `/project-test` | Comprehensive test pass across all modules |
 | `/project-execute` | `/project-execute [module]` | Dual-harness mode: hand a fully-specced module to Codex CLI for implementation while Claude orchestrates |
+| `/project-security-review` | `/project-security-review` | Independent Agent-based security review of pending changes — UK GDPR / healthcare focus. |
 
 ---
 
@@ -197,6 +202,10 @@ Claude has access to specialized tools for research, testing, and deployment. Us
 
 ### Frontend Development
 - **web-artifacts-builder skill** — React, Tailwind CSS, and shadcn/ui component patterns. Consult when building frontend modules.
+
+### Hooks
+- **PreCompact snapshot hook** (`.claude/hooks/pre-compact.sh`) — Writes recovery snapshots into `specs/sessions/` before conversation compaction. Configured by `.claude/settings.json`.
+- **SessionStart compact backup** — On compacted-session resume, prints the latest snapshot path when one exists. Claude Code issue #13572 means PreCompact may not fire reliably for `/compact` on some versions, so treat this as best-effort recovery.
 
 ### Rule: Research Before Implementing
 **Before implementing any technical pattern you're uncertain about, use Ref or Exa to look up current documentation.** Don't rely on potentially outdated training knowledge for version-specific API details. This ensures consistency with the latest tooling and avoids rework.
@@ -390,6 +399,7 @@ cat > .claude/skills/project-init/SKILL.md << 'SKILL_INIT_EOF'
 ---
 name: project-init
 description: "Initialise a new software project with full spec-first workflow — research, architecture, module specs, and roadmap. Use this whenever someone says 'build me a...', 'I want to create...', 'new project', 'start a project', or describes a product idea. Also use for major new feature areas within an existing project."
+effort: high
 ---
 
 # Project Initialization Skill
@@ -2091,6 +2101,7 @@ cat > ".claude/skills/project-blueprint/SKILL.md" << 'SKILL_BLUEPRINT_EOF'
 ---
 name: project-blueprint
 description: "Generate or regenerate the master architecture document (specs/MASTER_BLUEPRINT.md) — the single source of truth for tech stack, data model, API patterns, auth, UI conventions, and module relationships. Use when starting architecture, changing stack decisions, or after significant research that affects the technical approach."
+effort: high
 ---
 
 # Project Blueprint Skill
@@ -2841,6 +2852,41 @@ Running this skill regularly ensures the project knowledge compounds and future 
 - **End of working session**: When you're done for the day or switching focus
 - **After significant learning**: When you discover a pattern, mistake, or gotcha that others should know
 - **Before starting new work**: To ensure you're informed by previous lessons
+
+## Optional isolated code-review pass (`--isolate`)
+
+If `$ARGUMENTS` contains `--isolate`, **additionally** run a code-review pass in a fresh Explore-agent context (no edit/write tools, no parent transcript) on top of the normal in-session review. The Agent reviews only the diff for code-quality / correctness issues; the rest of this skill (session learnings, LEARNINGS.md / CLAUDE.md updates, next-task recommendation) still runs in this session because that work needs parent-session memory.
+
+When `--isolate` is detected:
+
+1. Capture the diff:
+
+   ```bash
+   diff_file="$(mktemp -t isolated-review-diff.XXXXXX)"
+   trap 'rm -f "$diff_file"' EXIT
+   if git rev-parse --verify origin/main >/dev/null 2>&1; then
+     base="$(git merge-base origin/main HEAD)"
+   elif git rev-parse --verify main >/dev/null 2>&1; then
+     base="$(git merge-base main HEAD)"
+   else
+     base="HEAD~1"
+   fi
+   git diff "$base"..HEAD > "$diff_file"
+   ```
+
+2. Launch an Explore agent (read-only):
+
+   ```text
+   Agent(
+     subagent_type="Explore",
+     description="Isolated diff code-review",
+     prompt="You are a code reviewer with no prior context. Review the diff below for code-quality issues only — correctness, clarity, naming, error handling, test coverage, simplicity. Output a markdown report with sections: Critical / High / Medium / Low. Quote file:line for each finding. Diff: <contents of $diff_file>"
+   )
+   ```
+
+3. **Then** continue with the normal in-session steps below. Append the Agent's report to the final review output, clearly labelled "Isolated code-review pass (Explore agent)".
+
+Without `--isolate` (the default), skip the Agent step and proceed with the in-session review only.
 
 ## Process
 
@@ -4139,6 +4185,348 @@ LIB_SCRUB_EOF
 chmod +x ".claude/lib/scrub-secrets.sh"
 echo -e "  ${GREEN}✓${RESET} .claude/lib/scrub-secrets.sh"
 
+cat > ".claude/hooks/pre-compact.sh" << 'HOOK_PRECOMPACT_EOF'
+#!/usr/bin/env bash
+# .claude/hooks/pre-compact.sh — PreCompact snapshot
+#
+# Fires before Claude Code compacts the conversation. Reads the hook input
+# JSON from stdin (Claude Code provides session_id, transcript_path, trigger,
+# custom_instructions, and others) and writes three companion snapshot files
+# into specs/sessions/ so context is recoverable post-compaction.
+#
+# Exit semantics: returns 0 in the happy path. With `set -e` plus `|| true`
+# guards, only filesystem errors (e.g. specs/sessions/ unwritable) can produce
+# a non-zero exit, which Claude Code surfaces but does NOT block compaction
+# on (the hook does not return decision: "block").
+#
+# Documented limitation: Claude Code issue #13572 reports PreCompact may not
+# fire reliably for /compact on some versions. The SessionStart `compact`
+# matcher in .claude/settings.json provides a backup recovery path that prints
+# the latest snapshot path on session resume.
+
+set -euo pipefail
+umask 077
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+readonly OUT_DIR="$REPO_ROOT/specs/sessions"
+mkdir -p "$OUT_DIR"
+chmod 700 "$OUT_DIR" 2>/dev/null || true
+
+readonly TS="$(date +%Y%m%d-%H%M%S)-$$"
+written=()
+
+# Read hook input JSON from stdin (best-effort — Claude Code may pipe nothing
+# in some configurations). Use jq if available; fall back to cat.
+hook_input="$(cat)"
+
+extract() {
+  # extract <jq-path> — empty string if jq missing or key absent
+  local key="$1"
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$hook_input" | jq -r "$key // empty" 2>/dev/null || true
+  fi
+}
+
+session_id="$(extract '.session_id')"
+transcript_path="$(extract '.transcript_path')"
+trigger="$(extract '.trigger')"
+custom_instructions="$(extract '.custom_instructions')"
+
+# Snapshot 1: plan file (if any plan was active)
+if compgen -G "$REPO_ROOT/.kit-orchestration/pr*-plan.md" >/dev/null 2>&1; then
+  latest_plan="$(ls -1t "$REPO_ROOT/.kit-orchestration/"pr*-plan.md 2>/dev/null | head -1)"
+  if [[ -n "$latest_plan" ]]; then
+    {
+      echo "# PreCompact snapshot — plan ($TS)"
+      echo
+      echo "Latest plan: $latest_plan"
+      echo "Session: ${session_id:-unknown}"
+      echo "Trigger: ${trigger:-unknown}"
+      echo
+      echo "---"
+      cat "$latest_plan"
+    } > "$OUT_DIR/$TS-plan.md"
+    chmod 600 "$OUT_DIR/$TS-plan.md" 2>/dev/null || true
+    written+=("$OUT_DIR/$TS-plan.md")
+  fi
+fi
+
+# Snapshot 2: transcript tail (last 50 lines)
+if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
+  {
+    echo "# PreCompact snapshot — transcript tail ($TS)"
+    echo
+    echo "Source: $transcript_path"
+    echo "Session: ${session_id:-unknown}"
+    echo "Trigger: ${trigger:-unknown}"
+    [[ -n "$custom_instructions" ]] && { echo "Custom instructions: $custom_instructions"; }
+    echo
+    echo "---"
+    tail -n 50 "$transcript_path"
+  } > "$OUT_DIR/$TS-transcript-tail.md"
+  chmod 600 "$OUT_DIR/$TS-transcript-tail.md" 2>/dev/null || true
+  written+=("$OUT_DIR/$TS-transcript-tail.md")
+fi
+
+# Snapshot 3: git activity
+{
+  echo "# PreCompact snapshot — git ($TS)"
+  echo
+  echo "Branch: $(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || echo unknown)"
+  echo
+  echo "## Recent commits"
+  echo
+  git -C "$REPO_ROOT" log --oneline -10 2>/dev/null || true
+  echo
+  echo "## Working-tree status"
+  echo
+  git -C "$REPO_ROOT" status --short 2>/dev/null || true
+} > "$OUT_DIR/$TS-git.md"
+chmod 600 "$OUT_DIR/$TS-git.md" 2>/dev/null || true
+written+=("$OUT_DIR/$TS-git.md")
+
+if (( ${#written[@]} == 0 )); then
+  printf 'pre-compact.sh: no snapshots written\n' >&2
+else
+  printf 'pre-compact.sh: snapshots written:\n' >&2
+  printf '  %s\n' "${written[@]}" >&2
+fi
+exit 0
+HOOK_PRECOMPACT_EOF
+chmod +x ".claude/hooks/pre-compact.sh"
+echo -e "  ${GREEN}✓${RESET} .claude/hooks/pre-compact.sh"
+
+cat > ".claude/settings.json" << 'SETTINGS_JSON_EOF'
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-compact.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && if compgen -G 'specs/sessions/*-plan.md' >/dev/null 2>&1; then echo \"Session resumed after compaction. Latest snapshot: $(ls -1t specs/sessions/*-plan.md 2>/dev/null | head -1)\"; else echo 'Session resumed after compaction. No prior snapshot found in specs/sessions/.'; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
+SETTINGS_JSON_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/settings.json"
+
+cat > ".claude/skills/project-security-review/SKILL.md" << 'SKILL_SECURITY_EOF'
+---
+name: project-security-review
+description: Independent security review of pending changes via an isolated Agent context — fresh subagent reads the diff and a security checklist with no implementation bias. Use after a module is implemented and before merge, especially for changes that touch auth, data persistence, PII, audit logging, or anything UK GDPR-sensitive. Triggers on '/project-security-review', 'security review', 'audit this branch'.
+effort: high
+---
+
+# project-security-review
+
+Runs a security review of pending changes in **fresh Agent context** so the reviewer has no exposure to the implementation reasoning that produced the code. This isolation is the entire point — a reviewer who watched the code being written tends to share its blind spots.
+
+## Process
+
+1. **Capture the diff** (use `mktemp` + cleanup trap so the temp file doesn't leak):
+
+   ```bash
+   diff_file="$(mktemp -t security-review-diff.XXXXXX)"
+   trap 'rm -f "$diff_file"' EXIT
+   if git rev-parse --verify origin/main >/dev/null 2>&1; then
+     base="$(git merge-base origin/main HEAD)"
+   elif git rev-parse --verify main >/dev/null 2>&1; then
+     base="$(git merge-base main HEAD)"
+   else
+     base="HEAD~1"
+   fi
+   git diff "$base"..HEAD > "$diff_file"
+   ```
+
+2. **Identify the security checklist**: read `.claude/skills/project-security-review/security-review-prompt.md`. This is the canonical instruction set the Agent will follow.
+
+3. **Launch the Agent** with a read-only subagent type so the reviewer can't accidentally modify the working tree:
+
+   ```text
+   Agent(
+     subagent_type="Explore",
+     description="Security review (isolated read-only context)",
+     prompt=<contents of security-review-prompt.md, with $diff_file content and any relevant CLAUDE.md security section interpolated into the prompt body>
+   )
+   ```
+
+   The Explore agent runs with a fresh context window AND no edit/write tools — it has not seen planning or implementation discussion, and it cannot modify code. Its findings reflect the diff alone plus the security checklist.
+
+4. **Receive the Agent's report** and surface it to the user without modification. Add a one-paragraph framing explaining what was reviewed and any user-actionable next steps.
+
+5. **Optional follow-ups**:
+   - If the Agent found CRITICAL or HIGH issues, suggest the user address them before merge.
+   - Note that this skill does NOT modify code — it produces a report only.
+
+## When to use
+
+- Before merging any PR that touches auth, session management, or token handling.
+- After implementing data persistence for PII or healthcare-sensitive data (UK GDPR considerations).
+- When the change touches audit logging, access control, or rate limiting.
+- When you want a "second set of eyes" with no contextual bias.
+
+## Why isolation matters
+
+A reviewer who participated in implementation tends to validate the assumptions that drove the implementation. An Agent in fresh context only sees the diff — its blind spots are different from the implementer's, which is exactly what a security review needs.
+SKILL_SECURITY_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/skills/project-security-review/SKILL.md"
+
+cat > ".claude/skills/project-security-review/security-review-prompt.md" << 'PROMPT_SECURITY_EOF'
+# Security review — instructions for the spawned Agent
+
+You are a security reviewer with no prior context on this codebase. The diff below represents pending changes to a project. Review them rigorously against the checklist that follows. Do not assume the implementer's intent was correct.
+
+## Required output format
+
+```markdown
+# Security review
+
+**Files reviewed**: <count> | **Lines added/removed**: <+N/-M> | **Branch**: <name>
+
+## Findings by severity
+
+### CRITICAL (security vulnerability — must fix before merge)
+- [file:line — issue — recommendation]
+
+### HIGH (likely bug or major risk)
+
+### MEDIUM (concern worth addressing)
+
+### LOW (style / minor)
+
+## Areas that look clean
+
+- [bullet list of areas you reviewed and found acceptable]
+
+## Recommendation
+
+APPROVE / REQUEST CHANGES / COMMENT — with one-sentence rationale.
+```
+
+## Review checklist
+
+For every changed file, walk through:
+
+### Authentication & session
+- Are credentials read from environment variables only, never hard-coded?
+- Are session tokens stored securely (httpOnly cookies, not localStorage)?
+- Is logout invalidating the token server-side, not just client-side?
+- Are password resets rate-limited?
+
+### Authorisation
+- Is every protected endpoint checking `auth.getCurrentUser()` (or equivalent) before reading/writing data?
+- Are user IDs scoped to the requesting user (no `userId` parameter that lets one user act as another)?
+- Are admin endpoints separately gated?
+
+### Input validation
+- Is every user-supplied input validated (Zod, Pydantic, or equivalent) before being used in queries, file paths, or shell commands?
+- Are SQL queries parameterised (no string interpolation of user input)?
+- Are path traversal vectors closed (no `../` traversal in file operations)?
+- Are JSON parsers given size limits?
+
+### Output handling
+- Are user-supplied strings escaped before insertion into HTML (XSS prevention)?
+- Are error messages sanitised before being returned to the user (no stack traces, no internal paths)?
+- Are PII fields redacted from logs?
+
+### State-changing requests
+- Do state-changing endpoints (POST/PUT/PATCH/DELETE) require a CSRF token, SameSite=Strict cookie, or other origin-binding mechanism?
+- Are mutating operations idempotent where reasonable (so retries don't double-charge or duplicate records)?
+
+### External fetches and redirects
+- Are server-side fetches (image proxies, URL previewers, webhooks) protected against SSRF? (Block `127.*`, `169.254.169.254`, `10.*`, `192.168.*`, etc.)
+- Are open-redirect parameters validated against an allowlist of permitted destinations?
+
+### Webhook handling
+- Are inbound webhooks verifying signatures (Stripe `Stripe-Signature`, GitHub `X-Hub-Signature-256`, etc.) before any side effect?
+- Are webhook timestamps checked against replay (window <5 min)?
+
+### File uploads
+- Is uploaded file MIME type validated server-side (not just from client header)?
+- Are file size limits enforced before reading the body into memory?
+- Are uploaded files served from a separate origin (or with `Content-Disposition: attachment` and a sandboxed Content-Type) to prevent stored XSS?
+- Is the storage path randomised (no user-supplied filename in the served URL)?
+
+### Client-side secret hygiene
+- Are secrets ever embedded in the client bundle (e.g. via `process.env.SECRET` in client code, or hard-coded in JSX)?
+- Are runtime config endpoints scoped to non-secret values only?
+
+### Data persistence (UK GDPR considerations)
+- Is PII (names, emails, addresses, phone numbers, health data) only persisted when there's a documented lawful basis?
+- Is sensitive data encrypted at rest?
+- Are deletions actually deletions (not soft-deletes that retain personal data indefinitely)?
+- Is data residency considered (EU/UK data not silently flowing to non-adequate jurisdictions)?
+
+### Audit logging
+- Are security-relevant events logged (login, logout, permission change, data export, deletion)?
+- Are logs append-only and tamper-evident?
+- Are PII redaction rules applied to logs?
+
+### Healthcare-domain compliance (where applicable)
+- If the project touches NHS or other healthcare data: is access strictly role-based?
+- Are clinical records versioned (no destructive edits)?
+- Is consent recorded with timestamp and auditable trail?
+
+### Dependencies
+- Are new dependencies from reputable sources?
+- Do they have known CVEs (suggest the user run `npm audit` / `pip-audit` / equivalent)?
+- Are versions pinned (no `^` or `~` in production deps for security-critical packages)?
+
+### Operational hygiene
+- Are debug flags off in production code paths?
+- Are CORS origins restricted (no `*` in production)?
+- Are rate limits in place on public endpoints?
+
+## How to ground your findings
+
+For each finding, cite the file path and line number from the diff. Quote the relevant code. Explain why it's a concern in one sentence. Recommend a concrete fix.
+
+If you are uncertain whether something is a problem, mark it MEDIUM with a note of what would change your assessment.
+
+If a category is not applicable to this diff (e.g. no auth code touched), say so explicitly under "Areas that look clean" rather than skipping it.
+
+## Diff to review
+
+<the actual git diff is appended here at runtime>
+
+## Project-specific security context (if present)
+
+<the relevant section of CLAUDE.md is appended here at runtime>
+PROMPT_SECURITY_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/skills/project-security-review/security-review-prompt.md"
+
+touch specs/sessions/.gitkeep
+echo -e "  ${GREEN}✓${RESET} specs/sessions/.gitkeep"
+
+if [ ! -f "specs/sessions/.gitignore" ]; then
+  cat > "specs/sessions/.gitignore" << 'SESSIONS_GITIGNORE_EOF'
+# Snapshots written by .claude/hooks/pre-compact.sh
+# Treat as ephemeral runtime artefacts — do not commit.
+*
+!.gitignore
+!.gitkeep
+SESSIONS_GITIGNORE_EOF
+  echo -e "  ${GREEN}✓${RESET} specs/sessions/.gitignore"
+fi
+
 # =============================================================================
 # COMMANDS (thin wrappers that invoke skills)
 # =============================================================================
@@ -4201,6 +4589,11 @@ Read and follow the skill at `.claude/skills/project-execute/SKILL.md`.
 CMD_EXECUTE_EOF
 echo -e "  ${GREEN}✓${RESET} .claude/commands/project-execute.md"
 
+cat > ".claude/commands/project-security-review.md" << 'CMD_SECURITY_EOF'
+Read and follow the skill at `.claude/skills/project-security-review/SKILL.md`.
+CMD_SECURITY_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/commands/project-security-review.md"
+
 # =============================================================================
 # .kit-orchestration scaffolding (idempotent — preserves existing user content)
 # =============================================================================
@@ -4253,6 +4646,7 @@ This directory powers spec-first, AI-assisted development for this project.
     project-spec.md      /project-spec [module]
     project-module.md    /project-module [name]
     project-review.md    /project-review
+    project-security-review.md    /project-security-review
     project-status.md    /project-status
     project-deploy.md    /project-deploy
     project-test.md      /project-test
@@ -4325,6 +4719,8 @@ LEARNINGS.md            Accumulated project learnings
 | `/project-status` | Show project dashboard — what specs exist, what's built, what's next |
 | `/project-deploy` | Deploy to production and verify deployment |
 | `/project-test` | Run comprehensive tests — unit, type, lint, visual |
+| `/project-execute [name]` | Dual-harness: Claude plans/reviews, Codex CLI implements in tmux |
+| `/project-security-review` | Independent security review of pending changes |
 CLAUDE_README_EOF
 
 echo -e "  ${GREEN}✓${RESET} .claude/README.md"
@@ -4431,6 +4827,7 @@ echo "  .claude/commands/project-blueprint.md        → /project-blueprint"
 echo "  .claude/commands/project-spec.md             → /project-spec [module]"
 echo "  .claude/commands/project-module.md           → /project-module [name]"
 echo "  .claude/commands/project-review.md           → /project-review"
+echo "  .claude/commands/project-security-review.md  → /project-security-review"
 echo "  .claude/commands/project-status.md           → /project-status"
 echo "  .claude/commands/project-deploy.md           → /project-deploy"
 echo "  .claude/commands/project-test.md             → /project-test"
