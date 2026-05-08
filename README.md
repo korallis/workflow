@@ -71,6 +71,9 @@ your-project/
 │   │   ├── project-deploy.md        → /project-deploy        (NEW)
 │   │   └── project-test.md          → /project-test           (NEW)
 │   │
+│   ├── hooks/                       ← Claude Code hooks
+│   │   └── pre-compact.sh            → PreCompact snapshot writer
+│   │
 │   └── skills/                      ← Skill logic + bundled templates
 │       ├── project-init/
 │       │   ├── SKILL.md
@@ -192,7 +195,21 @@ These tools are invoked automatically by the skill logic — you don't need to c
 
 ---
 
+## Hooks
+
+Claude Code hooks are configured in `.claude/settings.json` and live in `.claude/hooks/`. The kit ships `pre-compact.sh`, a PreCompact hook that writes recovery snapshots into `specs/sessions/` before conversation compaction: the latest orchestration plan, a transcript tail when Claude provides `transcript_path`, and recent git activity.
+
+A SessionStart `compact` hook provides a backup path by printing the latest snapshot when a compacted session resumes. Claude Code issue [#13572](https://github.com/anthropics/claude-code/issues/13572) reports that PreCompact may not fire reliably for `/compact` on some versions, so treat snapshots as best-effort recovery rather than a hard guarantee.
+
+---
+
 ## The Slash Commands
+
+### Skill Frontmatter
+
+Skills may include `effort: high|medium|low|max` in their YAML frontmatter. This is a Claude-Code-specific hint for model effort selection and is silently ignored by other harnesses.
+
+---
 
 ### `/project-init [idea]`
 
@@ -308,6 +325,16 @@ This is the dual-harness alternative to `/project-module`. Claude reads the spec
 Prerequisites: `npm install -g @openai/codex`, then either `codex login` (ChatGPT auth — recommended for `gpt-5.5` access) or `OPENAI_API_KEY` on a tier that supports `gpt-5.5`. An attached tmux client is auto-detected via `tmux list-clients`. See the **Dual-Harness Mode** section above for the full routing description.
 
 **Output:** Module implementation committed to the branch (commits authored by the executor); a scrubbed log under `.kit-orchestration/`; learnings appended to `LEARNINGS.md`. The user reviews and pushes.
+
+---
+
+### `/project-security-review`
+
+**Use when:** You want an independent security review of pending changes before merge, especially for auth, data persistence, PII, audit logging, or UK GDPR-sensitive work.
+
+Captures the current diff, launches a fresh read-only Explore Agent with the project security checklist, and returns a severity-bucketed markdown report. The Agent sees the diff and checklist only, so it is not biased by the implementation session.
+
+**Output:** Security review report only. This command does not modify code.
 
 ---
 
@@ -614,11 +641,12 @@ As you discover better patterns — in your CLAUDE.md, your slash commands, your
 | `/project-blueprint` | Generate/regenerate master architecture |
 | `/project-spec [module]` | Create or update a module spec |
 | `/project-module [name]` | Plan + implement a module against its spec |
-| `/project-review` | Capture learnings, compound into CLAUDE.md |
+| `/project-review [--isolate]` | Capture learnings, compound into CLAUDE.md; `--isolate` adds a fresh Explore-agent code-review pass |
 | `/project-status` | Full project dashboard |
 | `/project-deploy` | Verify deployment readiness and promote to production |
 | `/project-test` | Run comprehensive tests (unit, type, lint, visual) |
 | `/project-execute [name]` | Dual-harness: Claude plans/reviews, Codex CLI (gpt-5.5) implements in a tmux pane |
+| `/project-security-review` | Independent read-only security review of pending changes |
 
 | File | Purpose |
 |------|---------|
