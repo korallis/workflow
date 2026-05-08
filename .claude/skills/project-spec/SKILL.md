@@ -37,8 +37,8 @@ Before designing the module, verify implementation patterns:
 
 Reference the templates bundled with this skill:
 
-- `./module-spec-template.md` — The standard MODULE_SPEC template with all required sections
-- `./claude-module-template.md` — The implementation guide template for module-specific conventions and patterns
+- `../project-init/module-spec-template.md` — The standard MODULE_SPEC template with all required sections
+- `../project-init/claude-module-template.md` — The implementation guide template for module-specific conventions and patterns
 
 ### Step 4: Draft the Specification
 
@@ -92,4 +92,4 @@ Once a spec is approved, use the `/project-module $ARGUMENTS` skill to begin imp
 
 ---
 
-**Templates**: See `module-spec-template.md` and `claude-module-template.md` for the structure and examples.
+**Templates**: See `../project-init/module-spec-template.md` and `../project-init/claude-module-template.md` for the structure and examples.
