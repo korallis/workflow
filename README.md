@@ -147,6 +147,38 @@ Boris Cherny (creator of Claude Code) follows this exact pattern: every mistake 
 
 ---
 
+## Dual-Harness Mode
+
+For big module implementations you can offload execution to Codex CLI while Claude Code orchestrates:
+
+| Mode | Skill | Plan & Review | Execute |
+| --- | --- | --- | --- |
+| Single-harness | `/project-module [name]` | Claude Code | Claude Code |
+| Dual-harness | `/project-execute [name]` | Claude Code | Codex CLI (`gpt-5.5`) |
+
+Dual-harness streams Codex output into a tmux pane that splits into your most-recent attached tmux session, so you see implementation happen live next to your Claude Code window.
+
+**Prerequisites**:
+
+- `npm install -g @openai/codex` (Codex CLI 0.128+ tested).
+- Authenticate. Choose one:
+  - `codex login` — ChatGPT auth (recommended for `gpt-5.5` access).
+  - `export OPENAI_API_KEY=…` — API-key auth. `gpt-5.5` requires Tier 1+ on your OpenAI org; if your tier doesn't include it, the preflight surfaces a model-availability error before opening any panes.
+- An attached tmux client. Easiest: launch Claude Code from inside tmux. Also works: have any other terminal attached to a tmux session — dispatch.sh detects via `tmux list-clients`. Without an attached client, output streams inline in Claude's transcript.
+- macOS: `brew install coreutils` (provides `gtimeout`, used by the dispatcher).
+
+**How it routes**:
+
+1. Claude validates `$ARGUMENTS` as a kebab-case module name and reads `CLAUDE.md`, `specs/MASTER_BLUEPRINT.md`, `specs/modules/<name>/SPEC.md`, and the module's `CLAUDE.md`. Aborts with actionable instructions if any are missing.
+2. Claude writes a dispatch prompt to `.kit-orchestration/exec-<name>-<timestamp>-prompt.md`.
+3. `.claude/lib/dispatch.sh` runs an auth + model-availability preflight, acquires a single-flight lock, opens a tmux pane with `tail -f` on the log (or streams inline if no client is attached), then runs `codex exec` as a child process with the prompt piped via stdin.
+4. Codex implements the module phase-by-phase, committing on green tests. It does not push.
+5. Claude reads `.kit-orchestration/execute-<name>-<timestamp>-last.md` directly and the run log via `bash .claude/lib/scrub-secrets.sh <log>` (so any secrets Codex echoed are redacted before re-entering Claude's context), summarises, and reads `.claude/skills/project-review/SKILL.md` to capture learnings.
+
+The dispatcher is observation-only on tmux — Codex's exit code comes from the real child process, not from `tmux send-keys`. macOS-portable (uses `gtimeout` and `mkdir`-based locks; no `flock` or GNU-only `timeout` dependency).
+
+---
+
 ## Tool Integrations
 
 The skills in this kit leverage Claude's MCP (Model Context Protocol) tool integrations to extend capabilities:

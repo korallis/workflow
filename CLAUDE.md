@@ -27,6 +27,7 @@ Sessions are triggered by explicit commands that signal intent:
 | `/project-blueprint` | Architecture mode — system design or regeneration |
 | `/project-spec [module]` | Specification mode — detailed module design |
 | `/project-module [name]` | Implementation mode — code and tests |
+| `/project-execute [module]` | Dual-harness mode: hand a fully-specced module to Codex CLI for implementation while Claude orchestrates. Live tmux pane in your most-recent attached session. |
 | `/project-review` | Wrap-up mode — capture learnings |
 | `/project-status` | Dashboard — show current state |
 | `/project-deploy` | Deployment mode — deploy and verify |
@@ -81,6 +82,27 @@ Every Claude session follows a 5-phase sequence, executed in order:
 - Link to relevant PRs/commits
 
 **Exit criteria:** Learnings captured, handoff ready for next session
+
+---
+
+## Dual-Harness Workflow
+
+Some tasks are big enough that you want Claude (Opus 4.7) to plan and review while Codex CLI (gpt-5.5) does the heavy implementation. The kit supports this via `/project-execute`:
+
+- **Plan + Review**: Claude Code (this session). Reads specs, builds the dispatch prompt, reads back the scrubbed log, summarises, runs the review skill.
+- **Execute**: Codex CLI (`gpt-5.5`, medium reasoning effort), launched via `.claude/lib/dispatch.sh`. Runs in a live tmux pane that splits into your most-recent attached session.
+
+Single-harness mode (`/project-module`) keeps everything in Claude. Use dual-harness when the module is large, well-specced, and you want to watch implementation happen in real time.
+
+**Prerequisites**:
+
+- `npm install -g @openai/codex` (Codex CLI 0.128+ tested).
+- Authenticate. Two paths with different model availability:
+  - `codex login` — ChatGPT auth. Required for `gpt-5.5` access without API tier requirements.
+  - `export OPENAI_API_KEY=…` — API-key auth. `gpt-5.5` requires Tier 1+ on your OpenAI org; if your org lacks the tier, the preflight will fail with a model-availability error.
+- A tmux session with at least one attached client. dispatch.sh detects the most-recent attached client via `tmux list-clients` — Claude Code itself doesn't have to be inside tmux as long as one client is attached somewhere. Override with `KIT_TMUX_SESSION=<name>` when you have multiple sessions.
+
+Portability: dispatch.sh works on Linux and macOS. Requires GNU coreutils (`timeout` on Linux, `gtimeout` after `brew install coreutils` on macOS). Lock is mkdir-based (no `flock` dependency).
 
 ---
 
