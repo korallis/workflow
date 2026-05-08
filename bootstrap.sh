@@ -4077,8 +4077,12 @@ if tmux_session=$(resolve_tmux_session); then
   TMUX_SESSION="$tmux_session"
   split_flag="-${KIT_TMUX_SPLIT:-h}"
   info "splitting tmux session '$TMUX_SESSION' (override with KIT_TMUX_SESSION=name)"
+  # The viewer pipes tail through sed that quits on the EXIT= line dispatch.sh
+  # appends after codex finishes. When sed exits, tail gets SIGPIPE, the pane
+  # shell finishes, and tmux closes the pane automatically (remain-on-exit off
+  # by default). No manual cleanup required.
   if ! tmux split-window -t "$TMUX_SESSION" "$split_flag" \
-        "echo '── kit-orchestration: $PHASE/$ID ──'; tail -f '$LOG_FILE'" >/dev/null 2>&1; then
+        "echo '── kit-orchestration: $PHASE/$ID ──'; tail -f '$LOG_FILE' | sed -n '/^EXIT=/{p;q;};p'" >/dev/null 2>&1; then
     msg="tmux split-window failed for session '$TMUX_SESSION'; viewing log inline."
     warn "$msg"
     echo "## dispatch.sh: $msg" >> "$LOG_FILE"
