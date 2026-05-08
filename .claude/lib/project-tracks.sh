@@ -13,6 +13,7 @@ PORT_BASE="${KIT_PARALLEL_PORT_BASE:-3000}"
 PARALLEL_MAX="${KIT_PARALLEL_MAX:-4}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'warn: %s\n' "$*" >&2; }
 info() { printf 'info: %s\n' "$*" >&2; }
 
 usage() {
@@ -290,7 +291,8 @@ Read:
 - CLAUDE.md
 
 Respect parallel track constraints:
-- Do not edit root LEARNINGS.md directly; leave track learnings as a fragment.
+- Do not edit root LEARNINGS.md directly. Write track learnings as a markdown fragment to `.claude/parallel/learnings/$module.md`; the integrator merges fragments after merge.
+- Do not edit root CLAUDE.md from a track; root CLAUDE.md updates are the integrator's job after merge.
 - Use PORT and KIT_PARALLEL_PORT for any dev server.
 - Stay within the module scope and its declared parallel.yaml paths.
 EOF

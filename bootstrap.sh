@@ -4546,6 +4546,7 @@ PORT_BASE="${KIT_PARALLEL_PORT_BASE:-3000}"
 PARALLEL_MAX="${KIT_PARALLEL_MAX:-4}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'warn: %s\n' "$*" >&2; }
 info() { printf 'info: %s\n' "$*" >&2; }
 
 usage() {
@@ -4823,7 +4824,8 @@ Read:
 - CLAUDE.md
 
 Respect parallel track constraints:
-- Do not edit root LEARNINGS.md directly; leave track learnings as a fragment.
+- Do not edit root LEARNINGS.md directly. Write track learnings as a markdown fragment to `.claude/parallel/learnings/$module.md`; the integrator merges fragments after merge.
+- Do not edit root CLAUDE.md from a track; root CLAUDE.md updates are the integrator's job after merge.
 - Use PORT and KIT_PARALLEL_PORT for any dev server.
 - Stay within the module scope and its declared parallel.yaml paths.
 EOF
@@ -5466,7 +5468,7 @@ This directory powers spec-first, AI-assisted development for this project.
     project-spec.md      /project-spec [module]
     project-module.md    /project-module [name]
     project-execute.md   /project-execute [module]
-    project-tracks.md    /project-tracks plan|start|status|review|merge|cleanup
+    project-tracks.md    /project-tracks plan|start    (Stage 1; status/review/merge/cleanup planned)
     project-review.md    /project-review
     project-security-review.md    /project-security-review
     project-status.md    /project-status
@@ -5542,7 +5544,7 @@ LEARNINGS.md            Accumulated project learnings
 | `/project-deploy` | Deploy to production and verify deployment |
 | `/project-test` | Run comprehensive tests — unit, type, lint, visual |
 | `/project-execute [name]` | Dual-harness: Claude plans/reviews, Codex CLI implements in tmux |
-| `/project-tracks plan\|start\|...` | Parallel module implementation across isolated git worktrees |
+| `/project-tracks plan\|start` | Parallel module implementation across isolated git worktrees (Stage 1; status/review/merge/cleanup planned) |
 | `/project-security-review` | Independent security review of pending changes |
 CLAUDE_README_EOF
 
@@ -5650,7 +5652,7 @@ echo "  .claude/commands/project-blueprint.md        → /project-blueprint"
 echo "  .claude/commands/project-spec.md             → /project-spec [module]"
 echo "  .claude/commands/project-module.md           → /project-module [name]"
 echo "  .claude/commands/project-execute.md          → /project-execute [module]"
-echo "  .claude/commands/project-tracks.md           → /project-tracks plan|start|…"
+echo "  .claude/commands/project-tracks.md           → /project-tracks plan|start"
 echo "  .claude/commands/project-review.md           → /project-review"
 echo "  .claude/commands/project-security-review.md  → /project-security-review"
 echo "  .claude/commands/project-status.md           → /project-status"
