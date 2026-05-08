@@ -25,7 +25,7 @@ Without structure, AI-assisted development on large projects fails in predictabl
 - **Architecture by accident** — modules get built without a shared data model, creating integration nightmares later
 - **The 80% wall** — projects get 80% done then stall because the AI has no map of what remains
 
-The kit solves all of these with three files Claude Code reads automatically (`CLAUDE.md`, `LEARNINGS.md`, and module-level `CLAUDE.md` files) and nine slash commands that enforce a structured workflow.
+The kit solves all of these with three files Claude Code reads automatically (`CLAUDE.md`, `LEARNINGS.md`, and module-level `CLAUDE.md` files) and ten slash commands that enforce a structured workflow.
 
 ---
 
@@ -192,7 +192,7 @@ These tools are invoked automatically by the skill logic — you don't need to c
 
 ---
 
-## The Nine Slash Commands
+## The Slash Commands
 
 ### `/project-init [idea]`
 
@@ -296,6 +296,18 @@ Verifies the build succeeds, checks environment variables are set, validates cri
 Runs the full test suite: unit tests, type checking (TypeScript), linting, and visual regression testing using browser automation. Generates a coverage report and flags any regressions.
 
 **Output:** Test results, coverage report, visual diff comparisons (if applicable).
+
+---
+
+### `/project-execute [module]`
+
+**Use when:** A module has approved `SPEC.md` and `CLAUDE.md` files and you want Codex CLI to do the implementation while Claude Code orchestrates and reviews.
+
+This is the dual-harness alternative to `/project-module`. Claude reads the specs, builds a dispatch prompt, and hands it to Codex CLI (`gpt-5.5`, medium reasoning effort) inside a tmux pane that splits into your most-recent attached session. Codex implements phase by phase, committing on green tests; it does not push. When Codex returns, Claude reads back the run log and last-message through `scrub-secrets.sh` (so any credentials Codex echoed are redacted before re-entering Claude's context), summarises the outcome, and runs the review skill to update `LEARNINGS.md`.
+
+Prerequisites: `npm install -g @openai/codex`, then either `codex login` (ChatGPT auth — recommended for `gpt-5.5` access) or `OPENAI_API_KEY` on a tier that supports `gpt-5.5`. An attached tmux client is auto-detected via `tmux list-clients`. See the **Dual-Harness Mode** section above for the full routing description.
+
+**Output:** Module implementation committed to the branch (commits authored by the executor); a scrubbed log under `.kit-orchestration/`; learnings appended to `LEARNINGS.md`. The user reviews and pushes.
 
 ---
 
@@ -606,6 +618,7 @@ As you discover better patterns — in your CLAUDE.md, your slash commands, your
 | `/project-status` | Full project dashboard |
 | `/project-deploy` | Verify deployment readiness and promote to production |
 | `/project-test` | Run comprehensive tests (unit, type, lint, visual) |
+| `/project-execute [name]` | Dual-harness: Claude plans/reviews, Codex CLI (gpt-5.5) implements in a tmux pane |
 
 | File | Purpose |
 |------|---------|

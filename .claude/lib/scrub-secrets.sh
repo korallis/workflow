@@ -36,7 +36,7 @@ input() {
 input "$@" | sed -E '
   s/sk-ant-[A-Za-z0-9_-]{20,}/sk-ant-REDACTED/g
   s/sk-proj-[A-Za-z0-9_-]{20,}/sk-proj-REDACTED/g
-  s/sk-[A-Za-z0-9]{32,}/sk-REDACTED/g
+  s/sk-[A-Za-z0-9_-]{32,}/sk-REDACTED/g
   s/sk_live_[A-Za-z0-9]{20,}/sk_live_REDACTED/g
   s/rk_live_[A-Za-z0-9]{20,}/rk_live_REDACTED/g
   s/ghp_[A-Za-z0-9]{30,}/ghp_REDACTED/g

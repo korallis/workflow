@@ -119,6 +119,7 @@ Portability: dispatch.sh works on Linux and macOS. Requires GNU coreutils (`time
 | `/project-status` | `/project-status` | Display project dashboard and current state |
 | `/project-deploy` | `/project-deploy` | Deploy to staging/production and verify |
 | `/project-test` | `/project-test` | Comprehensive test pass across all modules |
+| `/project-execute` | `/project-execute [module]` | Dual-harness mode: hand a fully-specced module to Codex CLI for implementation while Claude orchestrates |
 
 ---
 
