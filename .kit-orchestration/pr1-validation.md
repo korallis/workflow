@@ -1,0 +1,36 @@
+## Confirmed Correct
+- OK Bug #1 drop is valid: `bootstrap.sh` already writes `.claude/skills/project-spec/claude-module-template.md` at `bootstrap.sh:2847` and `.claude/skills/project-spec/module-spec-template.md` at `bootstrap.sh:2570`.
+- OK Bug #2 location is valid: `{{Type}>` exists at `.claude/skills/project-spec/claude-module-template.md:166` and in the embedded bootstrap copy at `bootstrap.sh:3013`.
+- OK Bug #3 retargeting is valid: the `finally` block sets `loading: true` at `.claude/skills/project-spec/claude-module-template.md:70-71` and `bootstrap.sh:2917-2918`; it is not in `project-module/SKILL.md`.
+- OK Bug #2/#3 deletion sequencing is valid in principle: `.claude/skills/project-init/claude-module-template.md` contains no `{{Type}>`, no `loading: true`, and no `finally` block. The only matching buggy copies are the deleted `project-spec` template and its deleted bootstrap heredoc.
+- OK Bug #4 locations are valid: `/project-fix-tests` appears at `.claude/skills/project-test/SKILL.md:310` and `bootstrap.sh:4381`.
+- OK Canonicalising on `project-init/` is defensible: `project-init` has `blueprint-template.md`, `module-spec-template.md`, and `claude-module-template.md`; `project-spec` only duplicates the latter two.
+- OK `project-spec/SKILL.md` currently references local templates at `.claude/skills/project-spec/SKILL.md:40-41` and `.claude/skills/project-spec/SKILL.md:95`, so repathing those references is required.
+- OK README placeholder location is valid: `README.md:39` contains `https://your-repo/bootstrap.sh`.
+- OK The proposed raw GitHub URL is structurally valid for this repo: `bootstrap.sh` is tracked at repo root, and `origin/main:bootstrap.sh` exists locally.
+- OK `ENHANCEMENT_PLAN.md` history is a single commit: `0cb37af076c8088164279961d942916a9220cedb`.
+
+## Issues Found
+- REJECT `.kit-orchestration/pr1-plan.md:111` and `.kit-orchestration/pr1-audit.md:23`: the `TEMPLATE_SPEC2_EOF` heredoc line claim is wrong. Actual range is `bootstrap.sh:2570-2844`, with confirmation echo at `bootstrap.sh:2845`. `TEMPLATE_CLAUDE2_EOF` is `bootstrap.sh:2847-3240`, with echo at `bootstrap.sh:3241`. The plan should use these exact ranges.
+- REJECT `.kit-orchestration/pr1-plan.md:113` and `.kit-orchestration/pr1-audit.md:49`: commit `0cb37af` is dated `2026-03-19`, not `2026-05-08` (`git log --follow --format=fuller -- ENHANCEMENT_PLAN.md`). If the goal is original commit attribution, use `2026-03-19`.
+- REJECT `.kit-orchestration/pr1-plan.md:113`: `## [Unreleased] - 2026-05-08` is not the right Keep-a-Changelog idiom. Use an undated `## [Unreleased]` placeholder, then a dated release section such as `## [0.1.0] - 2026-03-19` unless the release date is intentionally being set to PR1’s date.
+- REJECT `.kit-orchestration/pr1-plan.md:111-122`: the plan does not explicitly update the embedded `project-spec/SKILL.md` text inside `bootstrap.sh`. After deleting the template heredocs, `bootstrap.sh:2511-2512` and `bootstrap.sh:2566` must be repathed from local template names to `../project-init/...`; otherwise fresh bootstrap output will still point at deleted files.
+- REJECT `.kit-orchestration/pr1-plan.md:112-123`: README structure docs are missed. `README.md:84-87` still lists `project-spec/module-spec-template.md` and `project-spec/claude-module-template.md`; those entries must be removed or rewritten after consolidation.
+- REJECT `.kit-orchestration/pr1-plan.md:122`: “delete the `mkdir .claude/skills/project-spec` reference” is unsafe as written. `project-spec/SKILL.md` still exists and `.claude/commands/project-spec.md` points to it, so the directory must still be created. If removing redundancy, specify only the duplicate `mkdir` to remove, not all project-spec directory creation.
+- MINOR `.kit-orchestration/pr1-plan.md:108-121`: rows #2 and #3 say to patch the bad template and bootstrap heredoc, but the later “Cleaner sequence” says delete them. Reconcile the table to deletion-only to avoid executor ambiguity.
+- MINOR `.kit-orchestration/pr1-plan.md:121`: “#2/#3 are fixed only in `project-init/claude-module-template.md`” is misleading. That file is already clean; the bugs are resolved by deleting the dirty `project-spec` file and dirty bootstrap heredoc.
+- REJECT `.kit-orchestration/pr1-plan.md:129`: `.kit-orchestration/pr1-execution.log` should not be listed as a committed modified file because `.kit-orchestration/.gitignore` ignores `*.log`.
+- MINOR `.kit-orchestration/pr1-plan.md:133`: “combined into commit 5” is ambiguous and appears to mean bug #5, not commit #5. Commit #5 in the list is the README URL change. Drop commit #2 and fold bug #2/#3 deletion into the template-consolidation commit.
+- MINOR `.kit-orchestration/pr1-plan.md:110`: replacing `/project-fix-tests` with `/project-module [name]` creates a duplicate with the next line’s `/project-module deals`. It removes the orphan reference, but deletion or a clearer rerun/fix instruction would be cleaner.
+- REJECT `.kit-orchestration/pr1-plan.md:151-153`: `grep -r '{{Type}>' .`, `grep -r 'loading: true' .`, and `grep -r '/project-fix-tests' .` will false-positive on committed `.kit-orchestration/pr1-plan.md`, `.kit-orchestration/pr1-audit.md`, and validation prompts/logs. Scope the grep to source/bootstrap output or exclude `.kit-orchestration` and `.git`.
+- REJECT `.kit-orchestration/pr1-plan.md:149-155`: the manual checklist mixes contexts. `bash bootstrap.sh` in a clean temp directory tests generated kit files, but `ls CHANGELOG.md && ! ls ENHANCEMENT_PLAN.md` only applies to the source repo, not a bootstrapped target project. Split source-repo checks from bootstrapped-output checks.
+- MINOR `.kit-orchestration/pr1-plan.md:122`: `bootstrap.sh` is labelled as bug #7 work, but the changelog rename does not require a bootstrap change.
+
+## Suggested Additions
+- Add an explicit source check that no live consumer still references deleted project-spec templates, excluding orchestration docs: `git grep -n "project-spec/.*template\\|./module-spec-template.md\\|./claude-module-template.md" -- ':!.kit-orchestration/*'`.
+- Add a bootstrap-output check for both deleted templates: after `bash bootstrap.sh`, verify neither `.claude/skills/project-spec/module-spec-template.md` nor `.claude/skills/project-spec/claude-module-template.md` exists.
+- Add a bootstrap-output check that generated `.claude/skills/project-spec/SKILL.md` references `../project-init/module-spec-template.md` and `../project-init/claude-module-template.md`.
+- Add `bash -n bootstrap.sh` before the temp bootstrap smoke test, because large heredoc deletions can easily break shell syntax.
+- Add README verification for the structure tree around `README.md:74-88`, not just the install URL.
+- Add CHANGELOG verification that `CHANGELOG.md` has `## [Unreleased]`, a dated version section, and no remaining `ENHANCEMENT_PLAN.md`.
+- Add a commit-plan clarification: final atomic commits should be scaffolding/audit, template consolidation including #2/#3 deletion, project-test orphan reference, README URL/docs tree, and changelog rename/rewrite.
