@@ -56,6 +56,17 @@ When all SPEC §9 acceptance criteria pass, run:
 
 Then commit `MASTER_BLUEPRINT.md` updates: §4 adds the `/project-tracks` command; §5 dispatcher contract gains `KIT_PARALLEL_TRACK` env; §6 isolation pattern note that tracks reuse the Explore subagent.
 
+## Stage 1 implementation notes (2026-05-08)
+
+Steps 1–4 landed on `feat/parallel-tracks` as commits `b4ce278` and `a1bb3a3`. Notes for stage 2:
+
+- `dispatch.sh` per-track changes are additive — `KIT_PARALLEL_TRACK` unset = byte-identical legacy behaviour (verified). Don't refactor the legacy path during stage 2.
+- `.claude/lib/project-tracks.sh` carries both `plan` and `start` in one helper. The registry-lock function uses `trap … RETURN` (bash-only); fine because the helper has a bash shebang. Don't bolt on additional traps without considering interaction.
+- `.claude/parallel/tracks.json` is initialised as `{"tracks": [], "merge_order": [], "harness": null}` by both `bootstrap.sh` and `ensure_registry()` — keep them in sync if the schema gains fields.
+- `is_brownfield_repo()` in `project-tracks.sh` is currently dead code (both branches die with the same message). Stage 2 cleanup: delete it, since the spec mandates trusting `parallel.yaml` only.
+- `start` writes a minimal per-track dispatch prompt at `.kit-orchestration/tracks/<TS>-<module>/dispatch-prompt.md`. Stage 2's `status` and `review` commands should read from the same per-track directory.
+- Codex couldn't commit (sandbox blocked `.git/index.lock`); the orchestrator committed instead. Future stages can either bump `KIT_CODEX_SANDBOX=danger-full-access` for the run, or keep the orchestrator-commits pattern (which gives a verification gate — see `LEARNINGS.md` 2026-05-08).
+
 ## References
 
 - Claude Code worktree docs: https://code.claude.com/docs/en/worktrees
