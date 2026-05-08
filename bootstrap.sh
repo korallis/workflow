@@ -4832,6 +4832,7 @@ echo "  .claude/commands/project-research.md         → /project-research [topi
 echo "  .claude/commands/project-blueprint.md        → /project-blueprint"
 echo "  .claude/commands/project-spec.md             → /project-spec [module]"
 echo "  .claude/commands/project-module.md           → /project-module [name]"
+echo "  .claude/commands/project-execute.md          → /project-execute [module]"
 echo "  .claude/commands/project-review.md           → /project-review"
 echo "  .claude/commands/project-security-review.md  → /project-security-review"
 echo "  .claude/commands/project-status.md           → /project-status"
