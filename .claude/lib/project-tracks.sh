@@ -164,7 +164,7 @@ build_plan() {
     done
   done
 
-  local seen_module seen_path entry module_path other_entry other_module other_path
+  local seen_module seen_path entry other_entry other_module other_path
   for entry in "${PLAN_SHARED[@]}"; do
     seen_module="${entry%%:*}"
     seen_path="${entry#*:}"
