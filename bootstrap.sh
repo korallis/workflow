@@ -4087,11 +4087,13 @@ All tracks in one invocation use the same harness. Default harness is `codex`.
 For Codex tracks, the helper launches `.claude/lib/dispatch.sh` with:
 
 ```bash
-KIT_ALLOW_CONCURRENT=1
+KIT_DISPATCH_TS=<per-track-ts>
 KIT_PARALLEL_TRACK=<module>
 KIT_PARALLEL_PORT=<reserved-port>
 PORT=<reserved-port>
 ```
+
+`KIT_PARALLEL_TRACK` already namespaces the dispatcher's lock by module, so `KIT_ALLOW_CONCURRENT=1` is **not** set — it would disable that lock and let a second launch of the same module race in the same worktree. `KIT_DISPATCH_TS` is the per-track timestamp; the dispatcher reuses it for `.log`/`.jsonl`/`-report.json` filenames so they share the `<TS>-<module>` identifier with the per-track prompt directory.
 
 For Claude tracks, the helper uses `claude -w track-<module>` when the Claude
 CLI is available.
@@ -4651,6 +4653,20 @@ build_plan() {
 
   mapfile -t CANDIDATES < <(discover_modules)
   (( ${#CANDIDATES[@]} > 0 )) || die "no modules selected or discovered under specs/modules/"
+
+  # Reject duplicates before they cause merge_order rows, branch reuse, or
+  # registry collisions. normalise_module() in discover_modules already
+  # lowercases via tr, so case-insensitive compares fall out of equality.
+  local _seen=":" _dup=()
+  for module in "${CANDIDATES[@]}"; do
+    if [[ "$_seen" == *":$module:"* ]]; then
+      _dup+=("$module")
+    else
+      _seen="$_seen$module:"
+    fi
+  done
+  (( ${#_dup[@]} == 0 )) || die "duplicate module(s) in selection: ${_dup[*]}"
+
   (( ${#CANDIDATES[@]} <= PARALLEL_MAX )) || die "selected ${#CANDIDATES[@]} modules; KIT_PARALLEL_MAX is $PARALLEL_MAX"
 
   PLAN_MODULES=()
@@ -4818,12 +4834,18 @@ start_tracks() {
   ensure_registry
   mkdir -p "$REPO_ROOT/.claude/worktrees" "$REPO_ROOT/.kit-orchestration/tracks"
 
-  local idx=1 module branch worktree port started prompt_dir prompt_file pid
+  local idx=1 module branch worktree port started ts prompt_dir prompt_file pid rc
   for module in "${PLAN_MODULES[@]}"; do
     branch="track/$module"
     worktree="$REPO_ROOT/.claude/worktrees/track-$module"
     port=$((PORT_BASE + idx))
     started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # ONE timestamp per track. Used for the per-track prompt directory AND
+    # exported as KIT_DISPATCH_TS so the dispatcher's log/jsonl/report
+    # filenames share the same <TS>-<module> identifier. Without this, the
+    # orchestrator's advertised paths drift from what dispatch.sh writes
+    # (CodeRabbit finding on PR #7).
+    ts="$(date +%Y%m%d-%H%M%S)"
 
     if [[ ! -d "$worktree/.git" && ! -f "$worktree/.git" ]]; then
       if git show-ref --verify --quiet "refs/heads/$branch"; then
@@ -4837,7 +4859,7 @@ start_tracks() {
 
     copy_worktree_includes "$worktree"
 
-    prompt_dir="$REPO_ROOT/.kit-orchestration/tracks/$(date +%Y%m%d-%H%M%S)-$module"
+    prompt_dir="$REPO_ROOT/.kit-orchestration/tracks/${ts}-${module}"
     mkdir -p "$prompt_dir"
     prompt_file="$prompt_dir/dispatch-prompt.md"
     write_track_prompt "$module" "$prompt_file"
@@ -4850,6 +4872,7 @@ start_tracks() {
         # worktree. The per-track lock is the right granularity.
         (
           cd "$worktree"
+          KIT_DISPATCH_TS="$ts" \
           KIT_PARALLEL_TRACK="$module" \
           KIT_PARALLEL_PORT="$port" \
           PORT="$port" \
@@ -4861,7 +4884,7 @@ start_tracks() {
         command -v claude >/dev/null 2>&1 || die "claude CLI not found on PATH"
         (
           cd "$worktree"
-          KIT_PARALLEL_TRACK="$module" KIT_PARALLEL_PORT="$port" PORT="$port" \
+          KIT_DISPATCH_TS="$ts" KIT_PARALLEL_TRACK="$module" KIT_PARALLEL_PORT="$port" PORT="$port" \
           claude -w "track-$module" < "$prompt_file"
         ) > "$prompt_dir/launcher.log" 2>&1 &
         pid=$!
@@ -4869,7 +4892,26 @@ start_tracks() {
       *) die "unsupported harness: $HARNESS" ;;
     esac
 
+    # Register the spawned process in tracks.json. If the registry write
+    # fails (lock timeout, JSON corruption), the backgrounded child is
+    # otherwise unmanaged — kill and reap it before bubbling the error up,
+    # so /project-tracks status/cleanup don't lose track of it.
+    set +e
     append_registry_entry "$module" "$branch" "$worktree" "$HARNESS" "$port" "$pid" "$started"
+    rc=$?
+    set -e
+    if (( rc != 0 )); then
+      warn "registry write failed for $module (pid $pid); cleaning up spawned child"
+      kill -TERM "$pid" 2>/dev/null || true
+      # Give it 2s to exit cleanly, then SIGKILL.
+      for _ in 1 2; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+      done
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      die "failed to register $module in tracks.json (exit $rc); spawned child reaped"
+    fi
     printf 'started %s on %s (port %s, pid %s)\n' "$module" "$branch" "$port" "$pid"
     idx=$((idx + 1))
   done
@@ -5391,6 +5433,7 @@ if [ -f ".gitignore" ]; then
     echo "# AI Project Kit" >> .gitignore
     echo ".env" >> .gitignore
     echo ".env.local" >> .gitignore
+    echo ".dev.vars" >> .gitignore
   fi
 else
   cat > .gitignore << 'GITIGNORE_EOF'
@@ -5398,6 +5441,7 @@ else
 .env
 .env.local
 .env*.local
+.dev.vars
 GITIGNORE_EOF
 fi
 

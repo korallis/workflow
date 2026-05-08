@@ -60,11 +60,13 @@ All tracks in one invocation use the same harness. Default harness is `codex`.
 For Codex tracks, the helper launches `.claude/lib/dispatch.sh` with:
 
 ```bash
-KIT_ALLOW_CONCURRENT=1
+KIT_DISPATCH_TS=<per-track-ts>
 KIT_PARALLEL_TRACK=<module>
 KIT_PARALLEL_PORT=<reserved-port>
 PORT=<reserved-port>
 ```
+
+`KIT_PARALLEL_TRACK` already namespaces the dispatcher's lock by module, so `KIT_ALLOW_CONCURRENT=1` is **not** set — it would disable that lock and let a second launch of the same module race in the same worktree. `KIT_DISPATCH_TS` is the per-track timestamp; the dispatcher reuses it for `.log`/`.jsonl`/`-report.json` filenames so they share the `<TS>-<module>` identifier with the per-track prompt directory.
 
 For Claude tracks, the helper uses `claude -w track-<module>` when the Claude
 CLI is available.
