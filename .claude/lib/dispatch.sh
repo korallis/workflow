@@ -21,6 +21,8 @@
 #   KIT_AUTH_PREFLIGHT_SECONDS  preflight timeout (default 15)
 #   KIT_ALLOW_CONCURRENT=1   bypass single-flight lock
 #   KIT_CODEX_SANDBOX        override sandbox mode (default workspace-write)
+#   KIT_PARALLEL_TRACK       module name for per-track locks/logs/pane labels
+#   KIT_PARALLEL_PORT        port exported to the executor for this track
 #
 # Portability: works on Linux and macOS. Requires either `timeout`
 # (coreutils, default on Linux) or `gtimeout` (Homebrew coreutils on
@@ -31,7 +33,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 readonly KIT_DIR="$REPO_ROOT/.kit-orchestration"
-readonly LOCK_DIR="$KIT_DIR/.lock"
+readonly PARALLEL_DIR="$REPO_ROOT/.claude/parallel"
 
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 warn() { printf '\033[33mwarn:\033[0m %s\n'  "$*" >&2; }
@@ -67,6 +69,11 @@ esac
 [[ "$EFFORT" =~ ^(low|medium|high|xhigh)$ ]] || die "effort must be low|medium|high|xhigh, got: $EFFORT"
 [[ -f "$PROMPT_FILE" ]] || die "prompt file not found: $PROMPT_FILE"
 
+readonly TRACK_ID="${KIT_PARALLEL_TRACK:-}"
+if [[ -n "$TRACK_ID" ]]; then
+  [[ "$TRACK_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "KIT_PARALLEL_TRACK must be kebab-case alphanumeric, got: $TRACK_ID"
+fi
+
 # --- preflight: codex CLI presence + auth + model availability ---------------
 
 command -v codex >/dev/null 2>&1 || die "codex CLI not found on PATH. Install with: npm install -g @openai/codex"
@@ -93,18 +100,37 @@ fi
 # --- single-flight lock (mkdir-based, portable) ------------------------------
 
 mkdir -p "$KIT_DIR"
+if [[ -n "$TRACK_ID" ]]; then
+  mkdir -p "$PARALLEL_DIR/locks"
+  LOCK_DIR="$PARALLEL_DIR/locks/$TRACK_ID"
+else
+  LOCK_DIR="$KIT_DIR/.lock"
+fi
+readonly LOCK_DIR
+
 if [[ -z "${KIT_ALLOW_CONCURRENT:-}" ]]; then
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     die "another dispatch.sh run is in progress (lock dir at $LOCK_DIR). If a previous run died, remove it manually. Set KIT_ALLOW_CONCURRENT=1 to bypass."
   fi
   trap 'rm -rf "$LOCK_DIR"; rm -f "$auth_check_log"' EXIT
+elif [[ -n "$TRACK_ID" ]]; then
+  info "KIT_ALLOW_CONCURRENT=1 set; using track-scoped lock path $LOCK_DIR without acquiring it"
 fi
 
 # --- log path (PID-suffixed to avoid 1s timestamp collisions) ----------------
 
 readonly TIMESTAMP="$(date +%Y%m%d-%H%M%S)-$$"
-readonly LOG_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}.log"
-readonly LAST_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}-last.md"
+if [[ -n "$TRACK_ID" ]]; then
+  readonly TRACK_LOG_DIR="$KIT_DIR/tracks/${TIMESTAMP}-${TRACK_ID}"
+  mkdir -p "$TRACK_LOG_DIR"
+  readonly LOG_FILE="$TRACK_LOG_DIR/${TIMESTAMP}.log"
+  readonly LAST_FILE="$TRACK_LOG_DIR/${TIMESTAMP}-last.md"
+  readonly SENTINEL_FILE="$TRACK_LOG_DIR/${TIMESTAMP}-${TRACK_ID}.done"
+else
+  readonly LOG_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}.log"
+  readonly LAST_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}-last.md"
+  readonly SENTINEL_FILE=""
+fi
 touch "$LOG_FILE"
 info "log: $LOG_FILE"
 
@@ -140,7 +166,9 @@ resolve_tmux_session() {
 TMUX_SESSION=""
 if tmux_session=$(resolve_tmux_session); then
   TMUX_SESSION="$tmux_session"
-  split_flag="-${KIT_TMUX_SPLIT:-h}"
+  default_split="h"
+  [[ -n "$TRACK_ID" ]] && default_split="v"
+  split_flag="-${KIT_TMUX_SPLIT:-$default_split}"
   info "splitting tmux session '$TMUX_SESSION' (override with KIT_TMUX_SESSION=name)"
   # The viewer pipes tail through sed that quits on a dispatcher-only sentinel
   # appended after codex finishes. We use __KIT_DISPATCH_EXIT__= rather than a
@@ -148,8 +176,10 @@ if tmux_session=$(resolve_tmux_session); then
   # script, env example, error-code listing) doesn't close the pane early.
   # When sed exits, tail gets SIGPIPE, the pane shell finishes, and tmux
   # closes the pane automatically (remain-on-exit off by default).
+  pane_title="kit-orchestration: $PHASE/$ID"
+  [[ -n "$TRACK_ID" ]] && pane_title="[track:$TRACK_ID] $pane_title"
   if ! tmux split-window -t "$TMUX_SESSION" "$split_flag" \
-        "echo '── kit-orchestration: $PHASE/$ID ──'; tail -f '$LOG_FILE' | sed -n '/^__KIT_DISPATCH_EXIT__=/{p;q;};p'" >/dev/null 2>&1; then
+        "echo '── $pane_title ──'; tail -f '$LOG_FILE' | sed -n '/^__KIT_DISPATCH_EXIT__=/{p;q;};p'" >/dev/null 2>&1; then
     msg="tmux split-window failed for session '$TMUX_SESSION'; viewing log inline."
     warn "$msg"
     echo "## dispatch.sh: $msg" >> "$LOG_FILE"
@@ -178,6 +208,9 @@ codex_rc=${PIPESTATUS[0]}
 set -e
 
 echo "__KIT_DISPATCH_EXIT__=$codex_rc" >> "$LOG_FILE"
+if [[ -n "$SENTINEL_FILE" ]]; then
+  printf '%s\n' "$codex_rc" > "$SENTINEL_FILE"
+fi
 
 if [[ -z "$TMUX_SESSION" ]]; then
   echo "==== Codex output ends (exit $codex_rc) ===="

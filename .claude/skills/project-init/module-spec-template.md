@@ -369,3 +369,20 @@ export interface {{EXPORTED_INTERFACE}} {
 - [Module CLAUDE Guide](./CLAUDE.md)
 - [Architecture Decision Records]
 - [Related Spike Documents]
+
+## Optional Parallel Track Companion
+
+Create `parallel.yaml` beside this module spec when the module may run through
+`/project-tracks`. The planner requires `version: 1` and refuses brownfield
+modules without an explicit declaration.
+
+```yaml
+version: 1
+touches:
+  - src/{{module_slug}}/**
+shared:
+  - src/types/{{shared_type}}.ts
+ports:
+  - 3001
+migrations: false
+```
