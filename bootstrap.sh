@@ -4378,7 +4378,6 @@ RECOMMENDED ACTIONS:
   5. Add missing JSDoc comments (nice-to-have)
 
 NEXT STEPS:
-  /project-fix-tests       (auto-fix suggestions)
   /project-deploy          (after issues resolved)
   /project-module deals    (deep dive on deal issues)
 ```
