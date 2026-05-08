@@ -48,9 +48,27 @@ mkdir -p .claude/skills/project-security-review
 mkdir -p .claude/skills/project-status
 mkdir -p .claude/skills/project-deploy
 mkdir -p .claude/skills/project-test
+mkdir -p .claude/parallel/locks
+mkdir -p .claude/parallel/learnings
 mkdir -p .kit-orchestration
 mkdir -p specs/modules
 mkdir -p specs/sessions
+
+if [ ! -f ".claude/parallel/tracks.json" ]; then
+  cat > ".claude/parallel/tracks.json" << 'TRACKS_JSON_EOF'
+{"tracks": [], "merge_order": [], "harness": null}
+TRACKS_JSON_EOF
+  echo -e "  ${GREEN}✓${RESET} .claude/parallel/tracks.json"
+fi
+
+if [ ! -f ".worktreeinclude" ]; then
+  cat > ".worktreeinclude" << 'WORKTREEINCLUDE_EOF'
+.env
+.env.local
+.dev.vars
+WORKTREEINCLUDE_EOF
+  echo -e "  ${GREEN}✓${RESET} .worktreeinclude"
+fi
 
 # =============================================================================
 # CLAUDE.md
@@ -148,10 +166,12 @@ Every Claude session follows a 5-phase sequence, executed in order:
 
 Some tasks are big enough that you want Claude (Opus 4.7) to plan and review while Codex CLI (gpt-5.5) does the heavy implementation. The kit supports this via `/project-execute`:
 
-- **Plan + Review**: Claude Code (this session). Reads specs, builds the dispatch prompt, reads back the scrubbed log, summarises, runs the review skill.
-- **Execute**: Codex CLI (`gpt-5.5`, medium reasoning effort), launched via `.claude/lib/dispatch.sh`. Runs in a live tmux pane that splits into your most-recent attached session.
+- **Plan + Review**: Claude Code (this session). Reads specs, builds the dispatch prompt, reads back the scrubbed structured report + JSONL events, smoke-tests the working tree, **applies commits proposed by Codex** (orchestrator-commits pattern), summarises, runs the review skill.
+- **Execute**: Codex CLI (`gpt-5.5`, medium reasoning effort), launched via `.claude/lib/dispatch.sh` with `--json --output-schema`. Runs in a live tmux pane that splits into your most-recent attached session.
 
 Single-harness mode (`/project-module`) keeps everything in Claude. Use dual-harness when the module is large, well-specced, and you want to watch implementation happen in real time.
+
+**Orchestrator-commits is canonical.** Codex does NOT commit. It leaves the working tree dirty and emits a structured final report (schema at `.claude/skills/project-execute/codex-report-schema.json`) listing `proposed_commits`. Claude reviews the diff, smoke-tests, and applies commits with `Co-Authored-By` attribution. This sidesteps Codex's `workspace-write` sandbox `.git` restriction and gives a verification gate that catches spec deviations and training-data bleed-through before they land in history.
 
 **Prerequisites**:
 
@@ -1225,6 +1245,23 @@ export interface {{EXPORTED_INTERFACE}} {
 - [Module CLAUDE Guide](./CLAUDE.md)
 - [Architecture Decision Records]
 - [Related Spike Documents]
+
+## Optional Parallel Track Companion
+
+Create `parallel.yaml` beside this module spec when the module may run through
+`/project-tracks`. The planner requires `version: 1` and refuses brownfield
+modules without an explicit declaration.
+
+```yaml
+version: 1
+touches:
+  - src/{{module_slug}}/**
+shared:
+  - src/types/{{shared_type}}.ts
+ports:
+  - 3001
+migrations: false
+```
 TEMPLATE_SPEC_EOF
 
 echo -e "  ${GREEN}✓${RESET} module-spec-template.md"
@@ -3834,29 +3871,45 @@ Then concatenate the following into a single prompt file at `.kit-orchestration/
 
    ```text
    You are the executor in a dual-harness orchestration. Implement the module
-   above end-to-end with these constraints:
+   above end-to-end. Constraints:
 
-   - Build phase by phase. After each phase: run tests; if green, git commit
-     with a conventional message; if red, fix or stop and ask.
-   - Do NOT manually edit files inside .git/ (e.g. config, hooks, refs). The
-     normal `git add` / `git commit` writes that those commands perform are
-     expected and allowed.
-   - Do NOT `git push`. Do NOT modify CI configuration (.github/, etc.).
+   - Build phase by phase. After each phase, run any tests you can.
+   - Do NOT commit. Leave the working tree dirty for the orchestrator to
+     inspect, smoke-test, and split into commits. Record proposed commit
+     boundaries in the `proposed_commits` field of your final report.
+   - Do NOT `git push`. Do NOT touch .git/ directly. Do NOT modify CI
+     configuration (.github/, etc.).
    - Do NOT modify files outside the module's directory unless the spec
-     requires shared edits — in that case, list them in your final report.
-   - Stop and ask if any spec instruction is ambiguous.
-   - At the end, write a final report to stdout with: phases completed,
-     files created, tests passing/failing, and any deviations from the spec.
+     requires shared edits. List any such edits in `files_modified`.
+   - Re-read any "Explicit negatives" section in the prompt before acting;
+     spec body negatives ("don't add X", "trust Y only") are repeated there
+     for emphasis and must be honoured.
+   - Stop and ask if any spec instruction is ambiguous; record questions
+     in the `open_questions` field of your final report.
+   - Your final agent message must be a JSON object conforming to the schema
+     at .claude/skills/project-execute/codex-report-schema.json (the dispatcher
+     enforces this via --output-schema).
    ```
 
-7. The full prompt template at `.claude/skills/project-execute/dispatch-prompt-template.md` provides the canonical assembly order; follow it.
+7. The full prompt template at `.claude/skills/project-execute/dispatch-prompt-template.md` provides the canonical assembly order; follow it. **Always include an "Explicit Negatives" section** listing kit-wide and spec-derived prohibitions so they're reiterated in the constraints block, not buried in the spec body.
+
+## Why Codex doesn't commit
+
+Codex's `workspace-write` sandbox blocks `.git/index.lock`, so commits would fail anyway. More importantly, **orchestrator-commits is the canonical pattern by design**:
+
+- Claude reads the scrubbed log + structured report, smoke-tests the working tree, then splits commits at sensible boundaries.
+- Co-Authored-By attribution stays on every commit.
+- The verification gate catches Codex spec deviations before they land in history.
+- No need for `KIT_CODEX_SANDBOX=danger-full-access` (which is what it sounds like).
+
+If you genuinely need Codex to commit (e.g. multi-turn runs that depend on intermediate state), set `KIT_CODEX_SANDBOX=danger-full-access` per-run — but the default flow does not.
 
 ## Dispatch via dispatch.sh
 
-Run, as a single Bash tool call (reusing the same `$TS` from the prompt-build step):
+Run, as a single Bash tool call (reusing the same `$TS` from the prompt-build step). **Export `KIT_DISPATCH_TS=$TS` first** so the dispatcher reuses your token instead of forking a fresh one — without this, the advertised `.jsonl`/`-report.json`/`.log` paths drift from what you computed and downstream `Read` calls fail:
 
 ```bash
-bash .claude/lib/dispatch.sh execute "$ARGUMENTS" gpt-5.5 medium \
+KIT_DISPATCH_TS="$TS" bash .claude/lib/dispatch.sh execute "$ARGUMENTS" gpt-5.5 medium \
   ".kit-orchestration/exec-$ARGUMENTS-$TS-prompt.md"
 ```
 
@@ -3864,17 +3917,187 @@ The dispatcher handles tmux split (into the most-recent attached session), log c
 
 ## After Codex returns
 
-Use the same `$TS` from the prompt-build step. **Both `-last.md` and `.log` must be piped through `scrub-secrets.sh` before re-entering Claude's context** — `-last.md` is Codex's final agent message and may include credentials it echoed during the run; do not trust it as pre-sanitised.
+Use the same `$TS` from the prompt-build step. **All of `-report.json`, `-last.md`, and `.log` must be piped through `scrub-secrets.sh` before re-entering Claude's context** — even the schema-validated report can contain credentials Codex echoed during the run.
 
-1. Read the scrubbed last-message: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS-last.md`.
-2. Read the scrubbed run log tail: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.log | tail -200`. Never read the raw `.log` or `-last.md` directly.
-3. Summarise the outcome to the user: phases completed, commits Codex created on the branch, tests run, deviations.
-4. **Run the review skill in this session**: read `.claude/skills/project-review/SKILL.md` and follow its instructions to update `LEARNINGS.md`. (Skills cannot literally invoke other skills as user actions; this is the Claude-reads-and-follows pattern.) Alternatively, if the user prefers an isolated review, suggest they run `/project-review --isolate` (added in PR3).
-5. Do NOT push the branch — that's the user's call.
+1. Read the scrubbed structured report (preferred): `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS-report.json`. This is JSON conforming to `codex-report-schema.json` — `phases_completed`, `files_modified`, `files_created`, `tests_run`, `proposed_commits`, `deviations`, `open_questions`. Trust the structure, but verify each field against repo state.
+2. **Cross-check the report against ground truth.** Run `git status --short`, `git diff --stat`, and the test commands listed in `tests_run`. If `phases_completed` references work that doesn't appear in the diff, treat it as bleed-through and flag to the user. Schema enforcement gives shape; ground truth gives correctness.
+3. Read the scrubbed JSONL events for context if needed: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.jsonl | jq -c .`. Or the scrubbed pretty log: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.log | tail -200`. Never read raw `.log`/`.jsonl`/`-report.json` directly — every artefact must pass through `scrub-secrets.sh`.
+4. **Apply `proposed_commits` from the report** (orchestrator-commits pattern). Stage files, write commits with the proposed subjects + Conventional Commit prefixes + `Co-Authored-By: Codex CLI gpt-5.5 (medium)`. If you disagree with the boundaries, split or merge as you see fit before committing.
+5. Summarise to the user: phases completed (verified), commits applied, tests run, deviations from spec, open questions.
+6. **Run the review skill in this session**: read `.claude/skills/project-review/SKILL.md` and follow its instructions to update `LEARNINGS.md`. (Skills cannot literally invoke other skills as user actions; this is the Claude-reads-and-follows pattern.) Alternatively, if the user prefers an isolated review, suggest they run `/project-review --isolate` (added in PR3).
+7. Do NOT push the branch — that's the user's call.
 
 Note: the `<TS>` placeholders in any spec or log examples elsewhere in the kit refer to the same `$TS` value computed once per `/project-execute` run.
 SKILL_EXECUTE_EOF
 echo -e "  ${GREEN}✓${RESET} .claude/skills/project-execute/SKILL.md"
+
+cat > ".claude/skills/project-execute/codex-report-schema.json" << 'SCHEMA_REPORT_EOF'
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Codex Final Report",
+  "description": "Schema enforced via `codex exec --output-schema` so the executor's final message is machine-readable. Catches training-data bleed-through (free-form claims like 'X is now complete' for projects that aren't this one) by forcing every field to map to repo state the orchestrator can verify.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "phases_completed",
+    "files_modified",
+    "files_created",
+    "tests_run",
+    "proposed_commits",
+    "deviations",
+    "open_questions"
+  ],
+  "properties": {
+    "phases_completed": {
+      "type": "array",
+      "description": "Phases or numbered steps from the module spec that were completed. Use the exact step numbers/names from CLAUDE.md.",
+      "items": { "type": "string" }
+    },
+    "files_modified": {
+      "type": "array",
+      "description": "Repository-relative paths of modified existing files.",
+      "items": { "type": "string" }
+    },
+    "files_created": {
+      "type": "array",
+      "description": "Repository-relative paths of newly created files.",
+      "items": { "type": "string" }
+    },
+    "tests_run": {
+      "type": "array",
+      "description": "Each test command actually executed and its outcome.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "outcome"],
+        "properties": {
+          "command": { "type": "string" },
+          "outcome": { "type": "string", "enum": ["passed", "failed", "skipped"] },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "proposed_commits": {
+      "type": "array",
+      "description": "Suggested commit boundaries for the orchestrator. Codex MUST NOT commit; the orchestrator inspects the working tree and applies these.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subject", "paths"],
+        "properties": {
+          "subject": { "type": "string", "description": "Conventional Commit subject line, <72 chars." },
+          "body": { "type": "string", "description": "Optional commit body explaining motivation." },
+          "paths": {
+            "type": "array",
+            "description": "Repository-relative paths included in this commit.",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "deviations": {
+      "type": "array",
+      "description": "Anywhere this run departed from the spec. Empty array if perfect compliance.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["spec_section", "what_changed", "reason"],
+        "properties": {
+          "spec_section": { "type": "string", "description": "Spec section reference (e.g. 'SPEC.md §6 brownfield detection')." },
+          "what_changed": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "description": "Questions Codex couldn't resolve and wants the orchestrator to decide.",
+      "items": { "type": "string" }
+    }
+  }
+}
+SCHEMA_REPORT_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/skills/project-execute/codex-report-schema.json"
+
+# -----------------------------------------------------------------------------
+# .claude/skills/project-tracks/SKILL.md
+# -----------------------------------------------------------------------------
+
+mkdir -p ".claude/skills/project-tracks"
+cat > ".claude/skills/project-tracks/SKILL.md" << 'SKILL_TRACKS_EOF'
+---
+name: project-tracks
+description: Plan and start isolated parallel module implementation tracks from specs/MODULES.md and per-module parallel.yaml declarations.
+effort: high
+---
+
+# /project-tracks
+
+Parallel module implementation command. Stage 1 supports:
+
+- `/project-tracks plan [modules...] [--harness=codex|claude]`
+- `/project-tracks start [modules...] [--harness=codex|claude]`
+
+Use the helper script for deterministic parsing and side effects:
+
+```bash
+bash .claude/lib/project-tracks.sh plan "$ARGUMENTS"
+bash .claude/lib/project-tracks.sh start "$ARGUMENTS"
+```
+
+## Plan
+
+Run:
+
+```bash
+bash .claude/lib/project-tracks.sh plan [modules...] [--harness=codex|claude]
+```
+
+Requirements enforced by the helper:
+
+- `specs/MODULES.md` must exist, otherwise print clear guidance.
+- Each selected module must have `specs/modules/<module>/parallel.yaml`.
+- `parallel.yaml` must declare `version: 1`.
+- Selected modules must not have dependency edges between each other in `specs/MODULES.md`.
+- Selected modules must not declare the same `shared:` path.
+- Total selected modules must be `<= KIT_PARALLEL_MAX` (default 4).
+- Missing `parallel.yaml` prints `add parallel.yaml or run sequentially`.
+
+`plan` is read-only. It prints a proposal and does not create worktrees,
+registry entries, locks, panes, logs, or branches.
+
+## Start
+
+Run:
+
+```bash
+bash .claude/lib/project-tracks.sh start [modules...] [--harness=codex|claude]
+```
+
+`start` reuses the same validation as `plan`, then for each selected module:
+
+1. Creates `.claude/worktrees/track-<module>` on branch `track/<module>`.
+2. Copies files listed in `.worktreeinclude` when they exist.
+3. Reserves `KIT_PARALLEL_PORT_BASE + index` (default `3000 + index`).
+4. Appends a running entry to `.claude/parallel/tracks.json` under a mkdir lock.
+5. Launches the selected harness in the worktree.
+
+All tracks in one invocation use the same harness. Default harness is `codex`.
+
+**Stage 1 supports only `--harness=codex`.** `--harness=claude` is reserved for a future stage; the current launcher fails fast rather than silently bypass the per-track lock, JSON-mode capture, and schema validation that the codex path gets through `dispatch.sh`.
+
+For Codex tracks, the helper launches `.claude/lib/dispatch.sh` with:
+
+```bash
+KIT_DISPATCH_TS=<per-track-ts>
+KIT_PARALLEL_TRACK=<module>
+KIT_PARALLEL_PORT=<reserved-port>
+PORT=<reserved-port>
+```
+
+`KIT_PARALLEL_TRACK` already namespaces the dispatcher's lock by module, so `KIT_ALLOW_CONCURRENT=1` is **not** set — it would disable that lock and let a second launch of the same module race in the same worktree. `KIT_DISPATCH_TS` is the per-track timestamp; the dispatcher reuses it for `.log`/`.jsonl`/`-report.json` filenames so they share the `<TS>-<module>` identifier with the per-track prompt directory.
+SKILL_TRACKS_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/skills/project-tracks/SKILL.md"
 
 cat > ".claude/skills/project-execute/dispatch-prompt-template.md" << 'TEMPLATE_DISPATCH_PROMPT_EOF'
 # project-execute Dispatch Prompt Template
@@ -3925,6 +4148,34 @@ Source: `specs/modules/<module>/CLAUDE.md`
 ## 6. Executor Instruction Block
 
 <!-- placeholder: explicit dual-harness implementation constraints from SKILL.md -->
+
+---
+
+## 6.5. Explicit Negatives
+
+This section reiterates "do NOT" requirements that appeared in §4 (Module Spec) or §5 (Module Conventions) so they get the same emphasis as the constraints block in §6. Spec deviations cluster around requirements that live only in spec body prose — repeat them here.
+
+Required entries every run (kit-wide negatives):
+
+- Do NOT commit. The orchestrator commits after smoke-testing. Record proposed commits in your final report.
+- Do NOT `git push` or open PRs.
+- Do NOT modify `.git/` directly. Do NOT modify CI config (`.github/`, etc.).
+- Do NOT modify `.claude/lib/dispatch.sh` while a dispatcher is running unless the spec specifically requires it (the dispatcher self-relocates to a temp copy, but live edits still confuse downstream tooling).
+- Do NOT modify `.claude/hooks/pre-compact.sh` or `.claude/lib/scrub-secrets.sh` unless explicitly in scope.
+
+Spec-derived entries (extracted from §4/§5 of THIS prompt's spec):
+
+<!-- placeholder: bullet list of "no X", "trust Y only", "don't add Z heuristic" requirements lifted verbatim from the spec body. The skill author is responsible for populating this when assembling the prompt; an empty list is acceptable but suspicious. -->
+
+---
+
+## 7. Final Report Schema
+
+Source: `.claude/skills/project-execute/codex-report-schema.json`
+
+Your final agent message MUST be a JSON object conforming to this schema. The dispatcher enforces this via `codex exec --output-schema`. Free-form claims of completion ("X is now done", "ready to ship") will not be accepted in any field — the orchestrator verifies every field against repository ground truth (`git status`, test output, file presence) before committing or summarising to the user.
+
+<!-- placeholder: the schema is loaded from disk by the dispatcher; do NOT inline it here, just reference the path. -->
 TEMPLATE_DISPATCH_PROMPT_EOF
 echo -e "  ${GREEN}✓${RESET} .claude/skills/project-execute/dispatch-prompt-template.md"
 
@@ -3956,6 +4207,8 @@ cat > ".claude/lib/dispatch.sh" << 'LIB_DISPATCH_EOF'
 #   KIT_AUTH_PREFLIGHT_SECONDS  preflight timeout (default 15)
 #   KIT_ALLOW_CONCURRENT=1   bypass single-flight lock
 #   KIT_CODEX_SANDBOX        override sandbox mode (default workspace-write)
+#   KIT_PARALLEL_TRACK       module name for per-track locks/logs/pane labels
+#   KIT_PARALLEL_PORT        port exported to the executor for this track
 #
 # Portability: works on Linux and macOS. Requires either `timeout`
 # (coreutils, default on Linux) or `gtimeout` (Homebrew coreutils on
@@ -3963,10 +4216,35 @@ cat > ".claude/lib/dispatch.sh" << 'LIB_DISPATCH_EOF'
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# --- self-relocation ---------------------------------------------------------
+# Copy this script to a temp path and re-exec from there, so live edits to
+# .claude/lib/dispatch.sh during the run (e.g. when Codex modifies the kit
+# itself) don't cause bash to re-read garbled offsets at trap time. The
+# relocated process owns the cleanup. Idempotent via env-var guard.
+#
+# REPO_ROOT must be captured BEFORE relocating, because after exec the
+# relocated copy can't introspect its origin (BASH_SOURCE will point to /tmp).
+
+if [[ "${KIT_DISPATCH_RELOCATED:-}" != "1" ]]; then
+  _kit_origin_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  _kit_self="$(mktemp -t kit-dispatch.XXXXXX)" || { echo "error: mktemp failed" >&2; exit 1; }
+  if ! cp -- "${BASH_SOURCE[0]}" "$_kit_self"; then
+    rm -f "$_kit_self"
+    echo "error: failed to copy dispatch.sh to $_kit_self" >&2
+    exit 1
+  fi
+  chmod +x "$_kit_self"
+  export KIT_DISPATCH_RELOCATED=1
+  export KIT_DISPATCH_TEMP="$_kit_self"
+  export KIT_DISPATCH_REPO_ROOT="$_kit_origin_repo"
+  exec bash "$_kit_self" "$@"
+fi
+trap 'rm -f "${KIT_DISPATCH_TEMP:-}"' EXIT
+
+readonly REPO_ROOT="${KIT_DISPATCH_REPO_ROOT:?KIT_DISPATCH_REPO_ROOT must be set by the relocation block}"
+readonly SCRIPT_DIR="$REPO_ROOT/.claude/lib"
 readonly KIT_DIR="$REPO_ROOT/.kit-orchestration"
-readonly LOCK_DIR="$KIT_DIR/.lock"
+readonly PARALLEL_DIR="$REPO_ROOT/.claude/parallel"
 
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 warn() { printf '\033[33mwarn:\033[0m %s\n'  "$*" >&2; }
@@ -4002,6 +4280,11 @@ esac
 [[ "$EFFORT" =~ ^(low|medium|high|xhigh)$ ]] || die "effort must be low|medium|high|xhigh, got: $EFFORT"
 [[ -f "$PROMPT_FILE" ]] || die "prompt file not found: $PROMPT_FILE"
 
+readonly TRACK_ID="${KIT_PARALLEL_TRACK:-}"
+if [[ -n "$TRACK_ID" ]]; then
+  [[ "$TRACK_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "KIT_PARALLEL_TRACK must be kebab-case alphanumeric, got: $TRACK_ID"
+fi
+
 # --- preflight: codex CLI presence + auth + model availability ---------------
 
 command -v codex >/dev/null 2>&1 || die "codex CLI not found on PATH. Install with: npm install -g @openai/codex"
@@ -4013,7 +4296,7 @@ readonly KIT_AUTH_PREFLIGHT_SECONDS="${KIT_AUTH_PREFLIGHT_SECONDS:-15}"
 # Auth + model preflight. Uses the actual target model so we surface
 # "model not available for this auth tier" before opening tmux panes.
 auth_check_log="$(mktemp)"
-trap 'rm -f "$auth_check_log"' EXIT
+trap 'rm -f "$auth_check_log" "${KIT_DISPATCH_TEMP:-}"' EXIT
 if ! kit_timeout "$KIT_AUTH_PREFLIGHT_SECONDS" codex exec \
      -m "$MODEL" \
      --skip-git-repo-check \
@@ -4028,20 +4311,50 @@ fi
 # --- single-flight lock (mkdir-based, portable) ------------------------------
 
 mkdir -p "$KIT_DIR"
+if [[ -n "$TRACK_ID" ]]; then
+  mkdir -p "$PARALLEL_DIR/locks"
+  LOCK_DIR="$PARALLEL_DIR/locks/$TRACK_ID"
+else
+  LOCK_DIR="$KIT_DIR/.lock"
+fi
+readonly LOCK_DIR
+
 if [[ -z "${KIT_ALLOW_CONCURRENT:-}" ]]; then
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     die "another dispatch.sh run is in progress (lock dir at $LOCK_DIR). If a previous run died, remove it manually. Set KIT_ALLOW_CONCURRENT=1 to bypass."
   fi
-  trap 'rm -rf "$LOCK_DIR"; rm -f "$auth_check_log"' EXIT
+  trap 'rm -rf "$LOCK_DIR"; rm -f "$auth_check_log" "${KIT_DISPATCH_TEMP:-}"' EXIT
+elif [[ -n "$TRACK_ID" ]]; then
+  info "KIT_ALLOW_CONCURRENT=1 set; using track-scoped lock path $LOCK_DIR without acquiring it"
 fi
 
 # --- log path (PID-suffixed to avoid 1s timestamp collisions) ----------------
+# When the orchestrator (e.g. /project-execute) computes a $TS up-front and
+# advertises paths derived from it, it must export KIT_DISPATCH_TS=$TS so we
+# reuse the same token here. Without this, dispatch.sh forks a new TIMESTAMP
+# and the advertised .jsonl/-report.json/.log paths become non-deterministic.
 
-readonly TIMESTAMP="$(date +%Y%m%d-%H%M%S)-$$"
-readonly LOG_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}.log"
-readonly LAST_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}-last.md"
-touch "$LOG_FILE"
+readonly TIMESTAMP="${KIT_DISPATCH_TS:-$(date +%Y%m%d-%H%M%S)-$$}"
+if [[ -n "$TRACK_ID" ]]; then
+  readonly TRACK_LOG_DIR="$KIT_DIR/tracks/${TIMESTAMP}-${TRACK_ID}"
+  mkdir -p "$TRACK_LOG_DIR"
+  readonly LOG_FILE="$TRACK_LOG_DIR/${TIMESTAMP}.log"
+  readonly JSONL_FILE="$TRACK_LOG_DIR/${TIMESTAMP}.jsonl"
+  readonly LAST_FILE="$TRACK_LOG_DIR/${TIMESTAMP}-last.md"
+  readonly REPORT_FILE="$TRACK_LOG_DIR/${TIMESTAMP}-report.json"
+  readonly SENTINEL_FILE="$TRACK_LOG_DIR/${TIMESTAMP}-${TRACK_ID}.done"
+else
+  readonly LOG_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}.log"
+  readonly JSONL_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}.jsonl"
+  readonly LAST_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}-last.md"
+  readonly REPORT_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}-report.json"
+  readonly SENTINEL_FILE=""
+fi
+touch "$LOG_FILE" "$JSONL_FILE"
+readonly SCHEMA_FILE="$REPO_ROOT/.claude/skills/project-execute/codex-report-schema.json"
 info "log: $LOG_FILE"
+info "jsonl: $JSONL_FILE"
+[[ -f "$SCHEMA_FILE" ]] && info "schema: $SCHEMA_FILE" || warn "no schema at $SCHEMA_FILE; running without --output-schema"
 
 # --- tmux session resolution -------------------------------------------------
 
@@ -4075,7 +4388,9 @@ resolve_tmux_session() {
 TMUX_SESSION=""
 if tmux_session=$(resolve_tmux_session); then
   TMUX_SESSION="$tmux_session"
-  split_flag="-${KIT_TMUX_SPLIT:-h}"
+  default_split="h"
+  [[ -n "$TRACK_ID" ]] && default_split="v"
+  split_flag="-${KIT_TMUX_SPLIT:-$default_split}"
   info "splitting tmux session '$TMUX_SESSION' (override with KIT_TMUX_SESSION=name)"
   # The viewer pipes tail through sed that quits on a dispatcher-only sentinel
   # appended after codex finishes. We use __KIT_DISPATCH_EXIT__= rather than a
@@ -4083,8 +4398,10 @@ if tmux_session=$(resolve_tmux_session); then
   # script, env example, error-code listing) doesn't close the pane early.
   # When sed exits, tail gets SIGPIPE, the pane shell finishes, and tmux
   # closes the pane automatically (remain-on-exit off by default).
+  pane_title="kit-orchestration: $PHASE/$ID"
+  [[ -n "$TRACK_ID" ]] && pane_title="[track:$TRACK_ID] $pane_title"
   if ! tmux split-window -t "$TMUX_SESSION" "$split_flag" \
-        "echo '── kit-orchestration: $PHASE/$ID ──'; tail -f '$LOG_FILE' | sed -n '/^__KIT_DISPATCH_EXIT__=/{p;q;};p'" >/dev/null 2>&1; then
+        "echo '── $pane_title ──'; tail -f '$LOG_FILE' | sed -n '/^__KIT_DISPATCH_EXIT__=/{p;q;};p'" >/dev/null 2>&1; then
     msg="tmux split-window failed for session '$TMUX_SESSION'; viewing log inline."
     warn "$msg"
     echo "## dispatch.sh: $msg" >> "$LOG_FILE"
@@ -4098,21 +4415,92 @@ fi
 readonly TMUX_SESSION
 
 # --- run codex (prompt via stdin to avoid ARG_MAX) ---------------------------
+#
+# Codex emits JSONL events on stdout (--json); we tee the raw stream to
+# $JSONL_FILE for orchestrator post-run analysis, and pretty-print it
+# through a jq formatter into $LOG_FILE for the human-watching tmux pane.
+# When jq is missing, the formatter is a passthrough (`cat`), so the pane
+# shows raw JSONL — readable, just less polished.
+#
+# --output-schema (when the schema file exists) forces the final agent
+# message to conform to .claude/skills/project-execute/codex-report-schema.json,
+# eliminating training-data bleed-through at the structural level.
+# --output-last-message writes that final (schema-conformant) message to
+# $REPORT_FILE for the orchestrator.
+
+format_jsonl() {
+  if ! command -v jq >/dev/null 2>&1; then
+    cat
+    return
+  fi
+  jq --unbuffered -R -r '
+    . as $raw |
+    (try (fromjson) catch null) as $j |
+    if $j == null then
+      $raw
+    elif $j.type == "thread.started" then
+      "── thread \($j.thread_id // "?") ──"
+    elif $j.type == "session.created" then
+      "── session \($j.session_id // "?") ──"
+    elif $j.type == "turn.started" then
+      "[turn] start"
+    elif $j.type == "turn.completed" then
+      "[turn] done  in=\($j.usage.input_tokens // "?")  out=\($j.usage.output_tokens // "?")  cached=\($j.usage.cached_input_tokens // "?")"
+    elif $j.type == "turn.failed" then
+      "[turn] FAILED: \($j.error.message // "?")"
+    elif $j.type == "item.started" and $j.item.type == "command_execution" then
+      "$ \($j.item.command // "")"
+    elif $j.type == "item.completed" and $j.item.type == "command_execution" then
+      "  ↳ exit \($j.item.exit_code // "?")  status=\($j.item.status // "?")"
+    elif $j.type == "item.completed" and $j.item.type == "file_change" then
+      "📝 \($j.item.status // "?")  \($j.item.kind // "")  \($j.item.path // "")"
+    elif $j.type == "item.completed" and $j.item.type == "agent_message" then
+      "\n--- agent message ---\n\($j.item.text // "")\n---"
+    elif $j.type == "item.completed" and $j.item.type == "reasoning" then
+      "💭 \(($j.item.text // $j.item.summary // "") | gsub("\n"; " ") | .[0:200])"
+    elif $j.type == "item.completed" and $j.item.type == "mcp_tool_call" then
+      "[mcp] \($j.item.server // "?")::\($j.item.tool // "?")  status=\($j.item.status // "?")"
+    elif $j.type == "item.completed" and $j.item.type == "web_search" then
+      "🔎 \($j.item.query // "?")"
+    elif $j.type == "item.completed" and $j.item.type == "todo_list" then
+      "📋 todos updated"
+    elif $j.type == "error" then
+      "ERROR: \($j.error.message // $j.message // "?")"
+    else
+      empty
+    end
+  ' 2>/dev/null
+}
+
+codex_args=(
+  -m "$MODEL"
+  -c "model_reasoning_effort=$EFFORT"
+  -s "$KIT_CODEX_SANDBOX"
+  --skip-git-repo-check
+  -C "$REPO_ROOT"
+  --json
+)
+# When a schema is present, the final message is JSON conforming to the
+# schema and goes to REPORT_FILE. Otherwise the final message is free
+# text and goes to LAST_FILE. -o is set exactly once.
+if [[ -f "$SCHEMA_FILE" ]]; then
+  codex_args+=( --output-schema "$SCHEMA_FILE" -o "$REPORT_FILE" )
+else
+  codex_args+=( -o "$LAST_FILE" )
+fi
 
 set +e
-kit_timeout "$KIT_CODEX_TIMEOUT" codex exec \
-  -m "$MODEL" \
-  -c "model_reasoning_effort=$EFFORT" \
-  -s "$KIT_CODEX_SANDBOX" \
-  --skip-git-repo-check \
-  -C "$REPO_ROOT" \
-  -o "$LAST_FILE" \
-  - <"$PROMPT_FILE" 2>&1 \
+kit_timeout "$KIT_CODEX_TIMEOUT" codex exec "${codex_args[@]}" - <"$PROMPT_FILE" \
+  | tee -a "$JSONL_FILE" \
+  | format_jsonl \
   | tee -a "$LOG_FILE"
 codex_rc=${PIPESTATUS[0]}
 set -e
 
 echo "__KIT_DISPATCH_EXIT__=$codex_rc" >> "$LOG_FILE"
+if [[ -n "$SENTINEL_FILE" ]]; then
+  printf '%s\n' "$codex_rc" > "$SENTINEL_FILE"
+fi
 
 if [[ -z "$TMUX_SESSION" ]]; then
   echo "==== Codex output ends (exit $codex_rc) ===="
@@ -4123,13 +4511,512 @@ if (( codex_rc == 124 )); then
 fi
 
 if (( codex_rc != 0 )); then
-  die "codex exec failed with exit $codex_rc; see $LOG_FILE"
+  die "codex exec failed with exit $codex_rc; see $LOG_FILE (raw events: $JSONL_FILE)"
 fi
 
-info "dispatch complete: $LAST_FILE"
+if [[ -f "$REPORT_FILE" ]]; then
+  info "dispatch complete: schema-validated report at $REPORT_FILE"
+elif [[ -f "$LAST_FILE" ]]; then
+  info "dispatch complete: final message at $LAST_FILE"
+else
+  warn "dispatch complete but no -o output file was written"
+fi
 exit 0
 LIB_DISPATCH_EOF
 chmod +x ".claude/lib/dispatch.sh"
+
+# -----------------------------------------------------------------------------
+# .claude/lib/project-tracks.sh — parallel module track helper
+# -----------------------------------------------------------------------------
+
+cat > ".claude/lib/project-tracks.sh" << 'LIB_PROJECT_TRACKS_EOF'
+#!/usr/bin/env bash
+# .claude/lib/project-tracks.sh - parallel module track helper
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PARALLEL_DIR="$REPO_ROOT/.claude/parallel"
+TRACKS_FILE="$PARALLEL_DIR/tracks.json"
+# Registry lock lives OUTSIDE the per-track locks/ dir so a module slug like
+# "registry" (kebab-case allows it) can't collide with the registry mutex.
+REGISTRY_LOCK="$PARALLEL_DIR/.registry-lock"
+MODULES_FILE="$REPO_ROOT/specs/MODULES.md"
+PORT_BASE="${KIT_PARALLEL_PORT_BASE:-3000}"
+PARALLEL_MAX="${KIT_PARALLEL_MAX:-4}"
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'warn: %s\n' "$*" >&2; }
+info() { printf 'info: %s\n' "$*" >&2; }
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  project-tracks.sh plan [modules...] [--harness=codex|claude]
+  project-tracks.sh start [modules...] [--harness=codex|claude]
+
+The plan command is read-only. The start command creates worktrees and launches
+one dispatcher per selected module.
+USAGE
+}
+
+normalise_module() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-'
+}
+
+parse_args() {
+  HARNESS="codex"
+  MODULE_ARGS=()
+  for arg in "$@"; do
+    case "$arg" in
+      --harness=codex) HARNESS="codex" ;;
+      --harness=claude) HARNESS="claude" ;;
+      --harness=*) die "unsupported harness: ${arg#--harness=}" ;;
+      --help|-h) usage; exit 0 ;;
+      *) MODULE_ARGS+=("$(normalise_module "$arg")") ;;
+    esac
+  done
+}
+
+discover_modules() {
+  if (( ${#MODULE_ARGS[@]} > 0 )); then
+    printf '%s\n' "${MODULE_ARGS[@]}"
+    return 0
+  fi
+
+  find "$REPO_ROOT/specs/modules" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+    | sed 's#.*/##' \
+    | sort
+}
+
+yaml_version() {
+  awk -F ':' '/^[[:space:]]*version[[:space:]]*:/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$1"
+}
+
+yaml_shared_paths() {
+  awk '
+    /^[[:space:]]*shared[[:space:]]*:/ { in_shared=1; next }
+    in_shared && /^[^[:space:]-]/ { in_shared=0 }
+    in_shared && /^[[:space:]]*-[[:space:]]*/ {
+      sub(/^[[:space:]]*-[[:space:]]*/, "")
+      print
+    }
+  ' "$1"
+}
+
+module_line_number() {
+  local module="$1"
+  if [[ ! -f "$MODULES_FILE" ]]; then
+    printf '999999\n'
+    return 0
+  fi
+  # Whole-slug match: a module slug like "auth" must NOT match inside "oauth"
+  # or "user-profile". Slug chars are [a-z0-9-]; surrounding chars must be
+  # outside that set or line boundaries. Lowercased on both sides for
+  # case-insensitivity (replaces the prior IGNORECASE+index() approach).
+  awk -v mod="$module" '
+    BEGIN {
+      m = tolower(mod)
+      pat = "(^|[^a-z0-9-])" m "([^a-z0-9-]|$)"
+    }
+    {
+      if (tolower($0) ~ pat) { print NR; found=1; exit }
+    }
+    END { if (!found) print 999999 }
+  ' "$MODULES_FILE"
+}
+
+line_has_dependency_between() {
+  local module="$1" other="$2"
+  [[ -f "$MODULES_FILE" ]] || return 1
+  awk -v a="$module" -v b="$other" '
+    BEGIN {
+      A = tolower(a); B = tolower(b)
+      pa = "(^|[^a-z0-9-])" A "([^a-z0-9-]|$)"
+      pb = "(^|[^a-z0-9-])" B "([^a-z0-9-]|$)"
+      found = 0
+    }
+    {
+      lc = tolower($0)
+      if (lc ~ /depend|require|blocked by|after/ && lc ~ pa && lc ~ pb) found = 1
+    }
+    END { exit found ? 0 : 1 }
+  ' "$MODULES_FILE"
+}
+
+build_plan() {
+  # SPEC §6 mandates "trust parallel.yaml only; no silent heuristics for
+  # brownfield". A module without parallel.yaml is refused outright,
+  # regardless of repo shape.
+  [[ -f "$MODULES_FILE" ]] || die "specs/MODULES.md is absent. Create it first, then add per-module parallel.yaml files before running /project-tracks plan."
+  [[ "$PARALLEL_MAX" =~ ^[0-9]+$ ]] || die "KIT_PARALLEL_MAX must be numeric"
+  (( PARALLEL_MAX >= 1 )) || die "KIT_PARALLEL_MAX must be at least 1"
+
+  mapfile -t CANDIDATES < <(discover_modules)
+  (( ${#CANDIDATES[@]} > 0 )) || die "no modules selected or discovered under specs/modules/"
+
+  # Reject duplicates before they cause merge_order rows, branch reuse, or
+  # registry collisions. normalise_module() in discover_modules already
+  # lowercases via tr, so case-insensitive compares fall out of equality.
+  local _seen=":" _dup=()
+  for module in "${CANDIDATES[@]}"; do
+    if [[ "$_seen" == *":$module:"* ]]; then
+      _dup+=("$module")
+    else
+      _seen="$_seen$module:"
+    fi
+  done
+  (( ${#_dup[@]} == 0 )) || die "duplicate module(s) in selection: ${_dup[*]}"
+
+  (( ${#CANDIDATES[@]} <= PARALLEL_MAX )) || die "selected ${#CANDIDATES[@]} modules; KIT_PARALLEL_MAX is $PARALLEL_MAX"
+
+  PLAN_MODULES=()
+  PLAN_SHARED=()
+  local module yaml version
+  for module in "${CANDIDATES[@]}"; do
+    yaml="$REPO_ROOT/specs/modules/$module/parallel.yaml"
+    [[ -f "$yaml" ]] || die "$module: add parallel.yaml or run sequentially"
+    version="$(yaml_version "$yaml")"
+    [[ "$version" == "1" ]] || die "$module: parallel.yaml must declare version: 1"
+    PLAN_MODULES+=("$module")
+    while IFS= read -r shared_path; do
+      [[ -n "$shared_path" ]] && PLAN_SHARED+=("$module:$shared_path")
+    done < <(yaml_shared_paths "$yaml")
+  done
+
+  local i j a b
+  for (( i=0; i<${#PLAN_MODULES[@]}; i++ )); do
+    for (( j=i+1; j<${#PLAN_MODULES[@]}; j++ )); do
+      a="${PLAN_MODULES[$i]}"
+      b="${PLAN_MODULES[$j]}"
+      if line_has_dependency_between "$a" "$b" || line_has_dependency_between "$b" "$a"; then
+        die "cannot parallelise $a and $b: dependency edge found in specs/MODULES.md"
+      fi
+    done
+  done
+
+  local seen_module seen_path entry other_entry other_module other_path
+  for entry in "${PLAN_SHARED[@]}"; do
+    seen_module="${entry%%:*}"
+    seen_path="${entry#*:}"
+    for other_entry in "${PLAN_SHARED[@]}"; do
+      other_module="${other_entry%%:*}"
+      other_path="${other_entry#*:}"
+      [[ "$seen_module" == "$other_module" ]] && continue
+      if [[ "$seen_path" == "$other_path" ]]; then
+        die "cannot parallelise $seen_module and $other_module: shared path collision on $seen_path"
+      fi
+    done
+  done
+
+  mapfile -t PLAN_MODULES < <(
+    for module in "${PLAN_MODULES[@]}"; do
+      printf '%06d %s\n' "$(module_line_number "$module")" "$module"
+    done | sort -n | awk '{print $2}'
+  )
+}
+
+print_plan() {
+  build_plan
+  printf 'Parallel track proposal\n'
+  printf 'Harness: %s\n' "$HARNESS"
+  printf 'Limit: %s\n' "$PARALLEL_MAX"
+  printf 'Merge order:\n'
+  local idx=1 module yaml shared
+  for module in "${PLAN_MODULES[@]}"; do
+    yaml="$REPO_ROOT/specs/modules/$module/parallel.yaml"
+    printf '  %d. %s\n' "$idx" "$module"
+    printf '     parallel.yaml: %s\n' "${yaml#$REPO_ROOT/}"
+    shared="$(yaml_shared_paths "$yaml" | paste -sd ', ' -)"
+    [[ -n "$shared" ]] && printf '     shared: %s\n' "$shared"
+    idx=$((idx + 1))
+  done
+}
+
+json_string() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+with_registry_lock() {
+  # Acquires the mkdir-based lock. The CALLER must install the RETURN trap
+  # so the lock survives until the caller's critical section completes —
+  # installing the trap inside this helper would release the lock the
+  # moment with_registry_lock returns (i.e. before TRACKS_FILE is written).
+  mkdir -p "$PARALLEL_DIR/locks"
+  local waited=0
+  until mkdir "$REGISTRY_LOCK" 2>/dev/null; do
+    waited=$((waited + 1))
+    (( waited <= 30 )) || die "timed out waiting for registry lock at $REGISTRY_LOCK"
+    sleep 1
+  done
+}
+
+ensure_registry() {
+  mkdir -p "$PARALLEL_DIR/locks" "$PARALLEL_DIR/learnings"
+  if [[ ! -f "$TRACKS_FILE" ]]; then
+    printf '{"tracks": [], "merge_order": [], "harness": null}\n' > "$TRACKS_FILE"
+  fi
+}
+
+append_registry_entry() {
+  local module="$1" branch="$2" worktree="$3" harness="$4" port="$5" pid="$6" started="$7"
+  ensure_registry
+  with_registry_lock
+  trap 'rm -rf "$REGISTRY_LOCK"' RETURN
+
+  # Refuse to register a duplicate. Two starts of the same module should not
+  # both write a row to tracks.json — that would corrupt merge_order and
+  # break /project-tracks status. The check runs under the registry lock so
+  # it's free of races.
+  #
+  # Failure mode: return 1 (NOT die). The caller (start_tracks) has already
+  # backgrounded the harness child and is waiting to reap it on a non-zero
+  # return. die would exit the whole shell and orphan the child, defeating
+  # the cleanup contract.
+  if command -v jq >/dev/null 2>&1; then
+    if jq -e --arg m "$module" '.tracks | map(select(.module == $m)) | length > 0' "$TRACKS_FILE" >/dev/null; then
+      printf 'error: %s\n' "$module is already registered in tracks.json (running or unfinished). Run /project-tracks cleanup first, or pick a different module." >&2
+      return 1
+    fi
+  else
+    if grep -q "\"module\":[[:space:]]*\"$module\"" "$TRACKS_FILE" 2>/dev/null; then
+      printf 'error: %s\n' "$module is already registered in tracks.json (running or unfinished). Run /project-tracks cleanup first, or pick a different module." >&2
+      return 1
+    fi
+  fi
+
+  local id escaped_worktree tmp
+  id="track-$module-${started//[^0-9]/}"
+  escaped_worktree="$(json_string "${worktree#$REPO_ROOT/}")"
+  tmp="$(mktemp)"
+  local object
+  object="{\"id\":\"$id\",\"module\":\"$module\",\"branch\":\"$branch\",\"worktree\":\"$escaped_worktree\",\"harness\":\"$harness\",\"port\":$port,\"status\":\"running\",\"started\":\"$started\",\"last_commit\":\"\",\"pid\":$pid}"
+
+  # JSON write: failures (jq/awk crash, mv fail, partial write) must
+  # propagate as `return 1` so the caller can reap the spawned child.
+  # Each step that can fail is checked individually; tmp file is cleaned
+  # up on any path.
+  if command -v jq >/dev/null 2>&1; then
+    if ! jq --argjson track "$object" --arg module "$module" --arg harness "$harness" '
+      .tracks += [$track]
+      | .merge_order += [$module]
+      | .harness = (.harness // $harness)
+    ' "$TRACKS_FILE" > "$tmp"; then
+      rm -f "$tmp"
+      printf 'error: %s\n' "jq failed to update $TRACKS_FILE for $module" >&2
+      return 1
+    fi
+  else
+    if ! awk -v object="$object" -v module="$module" -v harness="$harness" '
+      {
+        line=$0
+        if (line ~ /"tracks"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]/) {
+          sub(/"tracks"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]/, "\"tracks\": [" object "]", line)
+        } else {
+          sub(/"tracks"[[:space:]]*:[[:space:]]*\[/, "\"tracks\": [" object ",", line)
+        }
+        if (line ~ /"merge_order"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]/) {
+          sub(/"merge_order"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]/, "\"merge_order\": [\"" module "\"]", line)
+        } else {
+          sub(/"merge_order"[[:space:]]*:[[:space:]]*\[/, "\"merge_order\": [\"" module "\",", line)
+        }
+        sub(/"harness"[[:space:]]*:[[:space:]]*null/, "\"harness\": \"" harness "\"", line)
+        print line
+      }
+    ' "$TRACKS_FILE" > "$tmp"; then
+      rm -f "$tmp"
+      printf 'error: %s\n' "awk failed to update $TRACKS_FILE for $module" >&2
+      return 1
+    fi
+  fi
+  if ! mv "$tmp" "$TRACKS_FILE"; then
+    rm -f "$tmp"
+    printf 'error: %s\n' "failed to install updated $TRACKS_FILE for $module" >&2
+    return 1
+  fi
+}
+
+copy_worktree_includes() {
+  # `.worktreeinclude` is operator-controlled but easy to write incorrectly.
+  # Reject absolute paths and `..` traversals, then canonicalise both source
+  # and destination and verify they stay within their respective roots
+  # (REPO_ROOT and worktree). Anything outside is logged and skipped — never
+  # copied — so a stray `/etc/passwd` or `../../foo` in `.worktreeinclude`
+  # cannot exfiltrate or overwrite files outside the worktree.
+  local worktree="$1" include_file="$REPO_ROOT/.worktreeinclude" entry
+  [[ -f "$include_file" ]] || return 0
+
+  local repo_canon worktree_canon
+  repo_canon="$(cd "$REPO_ROOT" && pwd -P)"
+  worktree_canon="$(cd "$worktree" && pwd -P)"
+
+  while IFS= read -r entry; do
+    [[ -z "$entry" || "$entry" == \#* ]] && continue
+    if [[ "$entry" = /* || "$entry" == *".."* ]]; then
+      warn ".worktreeinclude entry rejected (absolute or traversal): $entry"
+      continue
+    fi
+
+    local src="$REPO_ROOT/$entry"
+    [[ -e "$src" ]] || continue
+
+    # Canonicalise. -m allows the destination not to exist yet; -e on src
+    # ensures we resolve only real source paths.
+    local src_canon dst_canon
+    src_canon="$(realpath -e "$src" 2>/dev/null)" || { warn ".worktreeinclude: cannot canonicalise $entry"; continue; }
+    dst_canon="$(realpath -m "$worktree/$entry")"
+
+    if [[ "$src_canon" != "$repo_canon"/* ]]; then
+      warn ".worktreeinclude entry escapes repo root, skipping: $entry"
+      continue
+    fi
+    if [[ "$dst_canon" != "$worktree_canon"/* ]]; then
+      warn ".worktreeinclude destination escapes worktree, skipping: $entry"
+      continue
+    fi
+
+    mkdir -p "$(dirname "$dst_canon")"
+    cp -R "$src_canon" "$dst_canon"
+  done < "$include_file"
+}
+
+write_track_prompt() {
+  # Quoted heredoc terminator (PROMPT_EOF in single quotes) disables ALL
+  # interpolation — backticks AND $module — so the markdown can use
+  # backticks freely. We do the $module substitution ourselves with sed
+  # afterwards. This is safer than escaping every backtick by hand.
+  local module="$1" prompt_file="$2"
+  cat > "$prompt_file" <<'PROMPT_EOF'
+# Parallel track dispatch: __MODULE__
+
+Implement only the __MODULE__ module in this isolated worktree.
+
+Read:
+- specs/modules/__MODULE__/SPEC.md
+- specs/modules/__MODULE__/CLAUDE.md
+- CLAUDE.md
+
+Respect parallel track constraints:
+- Do not edit root LEARNINGS.md directly. Write track learnings as a markdown fragment to `.claude/parallel/learnings/__MODULE__.md`; the integrator merges fragments after merge.
+- Do not edit root CLAUDE.md from a track; root CLAUDE.md updates are the integrator's job after merge.
+- Use PORT and KIT_PARALLEL_PORT for any dev server.
+- Stay within the module scope and its declared parallel.yaml paths.
+PROMPT_EOF
+  # Substitute the module placeholder. sed's `s` with delimiter `|` keeps
+  # the regex readable when the replacement contains slashes.
+  sed -i.bak "s|__MODULE__|$module|g" "$prompt_file"
+  rm -f "$prompt_file.bak"
+}
+
+start_tracks() {
+  # Validate harness FIRST, before any state mutation (worktree creation,
+  # registry init, prompt files, mkdir). Failing later (inside the per-
+  # module case) leaves orphan worktrees on disk for unsupported harnesses.
+  case "$HARNESS" in
+    codex) ;;
+    claude) die "harness 'claude' is not yet supported with parallel tracks (Stage 1 ships codex only). Use --harness=codex or run /project-module per-module sequentially." ;;
+    *) die "unsupported harness: $HARNESS" ;;
+  esac
+
+  build_plan
+  ensure_registry
+  mkdir -p "$REPO_ROOT/.claude/worktrees" "$REPO_ROOT/.kit-orchestration/tracks"
+
+  local idx=1 module branch worktree port started ts prompt_dir prompt_file pid rc
+  for module in "${PLAN_MODULES[@]}"; do
+    branch="track/$module"
+    worktree="$REPO_ROOT/.claude/worktrees/track-$module"
+    port=$((PORT_BASE + idx))
+    started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # ONE timestamp per track. Used for the per-track prompt directory AND
+    # exported as KIT_DISPATCH_TS so the dispatcher's log/jsonl/report
+    # filenames share the same <TS>-<module> identifier. Without this, the
+    # orchestrator's advertised paths drift from what dispatch.sh writes
+    # (CodeRabbit finding on PR #7).
+    ts="$(date +%Y%m%d-%H%M%S)"
+
+    if [[ ! -d "$worktree/.git" && ! -f "$worktree/.git" ]]; then
+      if git show-ref --verify --quiet "refs/heads/$branch"; then
+        git worktree add "$worktree" "$branch"
+      else
+        git worktree add "$worktree" -b "$branch"
+      fi
+    else
+      info "$module: reusing existing worktree $worktree"
+    fi
+
+    copy_worktree_includes "$worktree"
+
+    prompt_dir="$REPO_ROOT/.kit-orchestration/tracks/${ts}-${module}"
+    mkdir -p "$prompt_dir"
+    prompt_file="$prompt_dir/dispatch-prompt.md"
+    write_track_prompt "$module" "$prompt_file"
+
+    case "$HARNESS" in
+      codex)
+        # KIT_PARALLEL_TRACK already namespaces the dispatcher's lock by
+        # module — KIT_ALLOW_CONCURRENT=1 here would *disable* that lock,
+        # letting a second launch of the same module race in the same
+        # worktree. The per-track lock is the right granularity.
+        (
+          cd "$worktree"
+          KIT_DISPATCH_TS="$ts" \
+          KIT_PARALLEL_TRACK="$module" \
+          KIT_PARALLEL_PORT="$port" \
+          PORT="$port" \
+          bash "$worktree/.claude/lib/dispatch.sh" execute "$module" gpt-5.5 medium "$prompt_file"
+        ) > "$prompt_dir/launcher.log" 2>&1 &
+        pid=$!
+        ;;
+      # NB: claude is rejected at the top of start_tracks before any
+      # worktree is created, so this case is unreachable for it. We keep
+      # only the codex branch and the wildcard guard here.
+      *) die "unsupported harness: $HARNESS" ;;
+    esac
+
+    # Register the spawned process in tracks.json. If the registry write
+    # fails (lock timeout, JSON corruption), the backgrounded child is
+    # otherwise unmanaged — kill and reap it before bubbling the error up,
+    # so /project-tracks status/cleanup don't lose track of it.
+    set +e
+    append_registry_entry "$module" "$branch" "$worktree" "$HARNESS" "$port" "$pid" "$started"
+    rc=$?
+    set -e
+    if (( rc != 0 )); then
+      warn "registry write failed for $module (pid $pid); cleaning up spawned child"
+      kill -TERM "$pid" 2>/dev/null || true
+      # Give it 2s to exit cleanly, then SIGKILL.
+      for _ in 1 2; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+      done
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      die "failed to register $module in tracks.json (exit $rc); spawned child reaped"
+    fi
+    printf 'started %s on %s (port %s, pid %s)\n' "$module" "$branch" "$port" "$pid"
+    idx=$((idx + 1))
+  done
+}
+
+main() {
+  (( $# >= 1 )) || { usage; exit 1; }
+  local command="$1"
+  shift
+  parse_args "$@"
+
+  case "$command" in
+    plan) print_plan ;;
+    start) start_tracks ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+main "$@"
+LIB_PROJECT_TRACKS_EOF
+chmod +x ".claude/lib/project-tracks.sh"
+echo -e "  ${GREEN}✓${RESET} .claude/lib/project-tracks.sh"
 echo -e "  ${GREEN}✓${RESET} .claude/lib/dispatch.sh"
 
 cat > ".claude/lib/scrub-secrets.sh" << 'LIB_SCRUB_EOF'
@@ -4595,6 +5482,11 @@ Read and follow the skill at `.claude/skills/project-execute/SKILL.md`.
 CMD_EXECUTE_EOF
 echo -e "  ${GREEN}✓${RESET} .claude/commands/project-execute.md"
 
+cat > ".claude/commands/project-tracks.md" << 'CMD_TRACKS_EOF'
+Read and follow the skill at `.claude/skills/project-tracks/SKILL.md`.
+CMD_TRACKS_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/commands/project-tracks.md"
+
 cat > ".claude/commands/project-security-review.md" << 'CMD_SECURITY_EOF'
 Read and follow the skill at `.claude/skills/project-security-review/SKILL.md`.
 CMD_SECURITY_EOF
@@ -4606,6 +5498,9 @@ echo -e "  ${GREEN}✓${RESET} .claude/commands/project-security-review.md"
 if [ ! -f ".kit-orchestration/.gitignore" ]; then
   cat > ".kit-orchestration/.gitignore" << 'KIT_GITIGNORE_EOF'
 *.log
+*.jsonl
+*-report.json
+*-last.md
 *-snapshot.md
 .lock
 KIT_GITIGNORE_EOF
@@ -4621,6 +5516,7 @@ if [ -f ".gitignore" ]; then
     echo "# AI Project Kit" >> .gitignore
     echo ".env" >> .gitignore
     echo ".env.local" >> .gitignore
+    echo ".dev.vars" >> .gitignore
   fi
 else
   cat > .gitignore << 'GITIGNORE_EOF'
@@ -4628,6 +5524,7 @@ else
 .env
 .env.local
 .env*.local
+.dev.vars
 GITIGNORE_EOF
 fi
 
@@ -4651,6 +5548,8 @@ This directory powers spec-first, AI-assisted development for this project.
     project-blueprint.md /project-blueprint
     project-spec.md      /project-spec [module]
     project-module.md    /project-module [name]
+    project-execute.md   /project-execute [module]
+    project-tracks.md    /project-tracks plan|start    (Stage 1; status/review/merge/cleanup planned)
     project-review.md    /project-review
     project-security-review.md    /project-security-review
     project-status.md    /project-status
@@ -4726,6 +5625,7 @@ LEARNINGS.md            Accumulated project learnings
 | `/project-deploy` | Deploy to production and verify deployment |
 | `/project-test` | Run comprehensive tests — unit, type, lint, visual |
 | `/project-execute [name]` | Dual-harness: Claude plans/reviews, Codex CLI implements in tmux |
+| `/project-tracks plan\|start` | Parallel module implementation across isolated git worktrees (Stage 1; status/review/merge/cleanup planned) |
 | `/project-security-review` | Independent security review of pending changes |
 CLAUDE_README_EOF
 
@@ -4833,6 +5733,7 @@ echo "  .claude/commands/project-blueprint.md        → /project-blueprint"
 echo "  .claude/commands/project-spec.md             → /project-spec [module]"
 echo "  .claude/commands/project-module.md           → /project-module [name]"
 echo "  .claude/commands/project-execute.md          → /project-execute [module]"
+echo "  .claude/commands/project-tracks.md           → /project-tracks plan|start"
 echo "  .claude/commands/project-review.md           → /project-review"
 echo "  .claude/commands/project-security-review.md  → /project-security-review"
 echo "  .claude/commands/project-status.md           → /project-status"
