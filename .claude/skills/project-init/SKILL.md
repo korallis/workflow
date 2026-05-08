@@ -1,6 +1,7 @@
 ---
 name: project-init
 description: "Initialise a new software project with full spec-first workflow — research, architecture, module specs, and roadmap. Use this whenever someone says 'build me a...', 'I want to create...', 'new project', 'start a project', or describes a product idea. Also use for major new feature areas within an existing project."
+effort: high
 ---
 
 # Project Initialization Skill

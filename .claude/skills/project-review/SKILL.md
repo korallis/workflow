@@ -16,6 +16,41 @@ Running this skill regularly ensures the project knowledge compounds and future 
 - **After significant learning**: When you discover a pattern, mistake, or gotcha that others should know
 - **Before starting new work**: To ensure you're informed by previous lessons
 
+## Optional isolated code-review pass (`--isolate`)
+
+If `$ARGUMENTS` contains `--isolate`, **additionally** run a code-review pass in a fresh Explore-agent context (no edit/write tools, no parent transcript) on top of the normal in-session review. The Agent reviews only the diff for code-quality / correctness issues; the rest of this skill (session learnings, LEARNINGS.md / CLAUDE.md updates, next-task recommendation) still runs in this session because that work needs parent-session memory.
+
+When `--isolate` is detected:
+
+1. Capture the diff:
+
+   ```bash
+   diff_file="$(mktemp -t isolated-review-diff.XXXXXX)"
+   trap 'rm -f "$diff_file"' EXIT
+   if git rev-parse --verify origin/main >/dev/null 2>&1; then
+     base="$(git merge-base origin/main HEAD)"
+   elif git rev-parse --verify main >/dev/null 2>&1; then
+     base="$(git merge-base main HEAD)"
+   else
+     base="HEAD~1"
+   fi
+   git diff "$base"..HEAD > "$diff_file"
+   ```
+
+2. Launch an Explore agent (read-only):
+
+   ```text
+   Agent(
+     subagent_type="Explore",
+     description="Isolated diff code-review",
+     prompt="You are a code reviewer with no prior context. Review the diff below for code-quality issues only — correctness, clarity, naming, error handling, test coverage, simplicity. Output a markdown report with sections: Critical / High / Medium / Low. Quote file:line for each finding. Diff: <contents of $diff_file>"
+   )
+   ```
+
+3. **Then** continue with the normal in-session steps below. Append the Agent's report to the final review output, clearly labelled "Isolated code-review pass (Explore agent)".
+
+Without `--isolate` (the default), skip the Agent step and proceed with the in-session review only.
+
 ## Process
 
 ### Step 1: Summarize What Was Done
