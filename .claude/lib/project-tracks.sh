@@ -237,13 +237,20 @@ append_registry_entry() {
   # both write a row to tracks.json — that would corrupt merge_order and
   # break /project-tracks status. The check runs under the registry lock so
   # it's free of races.
+  #
+  # Failure mode: return 1 (NOT die). The caller (start_tracks) has already
+  # backgrounded the harness child and is waiting to reap it on a non-zero
+  # return. die would exit the whole shell and orphan the child, defeating
+  # the cleanup contract.
   if command -v jq >/dev/null 2>&1; then
     if jq -e --arg m "$module" '.tracks | map(select(.module == $m)) | length > 0' "$TRACKS_FILE" >/dev/null; then
-      die "$module is already registered in tracks.json (running or unfinished). Run /project-tracks cleanup first, or pick a different module."
+      printf 'error: %s\n' "$module is already registered in tracks.json (running or unfinished). Run /project-tracks cleanup first, or pick a different module." >&2
+      return 1
     fi
   else
     if grep -q "\"module\":[[:space:]]*\"$module\"" "$TRACKS_FILE" 2>/dev/null; then
-      die "$module is already registered in tracks.json (running or unfinished). Run /project-tracks cleanup first, or pick a different module."
+      printf 'error: %s\n' "$module is already registered in tracks.json (running or unfinished). Run /project-tracks cleanup first, or pick a different module." >&2
+      return 1
     fi
   fi
 
@@ -254,14 +261,22 @@ append_registry_entry() {
   local object
   object="{\"id\":\"$id\",\"module\":\"$module\",\"branch\":\"$branch\",\"worktree\":\"$escaped_worktree\",\"harness\":\"$harness\",\"port\":$port,\"status\":\"running\",\"started\":\"$started\",\"last_commit\":\"\",\"pid\":$pid}"
 
+  # JSON write: failures (jq/awk crash, mv fail, partial write) must
+  # propagate as `return 1` so the caller can reap the spawned child.
+  # Each step that can fail is checked individually; tmp file is cleaned
+  # up on any path.
   if command -v jq >/dev/null 2>&1; then
-    jq --argjson track "$object" --arg module "$module" --arg harness "$harness" '
+    if ! jq --argjson track "$object" --arg module "$module" --arg harness "$harness" '
       .tracks += [$track]
       | .merge_order += [$module]
       | .harness = (.harness // $harness)
-    ' "$TRACKS_FILE" > "$tmp"
+    ' "$TRACKS_FILE" > "$tmp"; then
+      rm -f "$tmp"
+      printf 'error: %s\n' "jq failed to update $TRACKS_FILE for $module" >&2
+      return 1
+    fi
   else
-    awk -v object="$object" -v module="$module" -v harness="$harness" '
+    if ! awk -v object="$object" -v module="$module" -v harness="$harness" '
       {
         line=$0
         if (line ~ /"tracks"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]/) {
@@ -277,9 +292,17 @@ append_registry_entry() {
         sub(/"harness"[[:space:]]*:[[:space:]]*null/, "\"harness\": \"" harness "\"", line)
         print line
       }
-    ' "$TRACKS_FILE" > "$tmp"
+    ' "$TRACKS_FILE" > "$tmp"; then
+      rm -f "$tmp"
+      printf 'error: %s\n' "awk failed to update $TRACKS_FILE for $module" >&2
+      return 1
+    fi
   fi
-  mv "$tmp" "$TRACKS_FILE"
+  if ! mv "$tmp" "$TRACKS_FILE"; then
+    rm -f "$tmp"
+    printf 'error: %s\n' "failed to install updated $TRACKS_FILE for $module" >&2
+    return 1
+  fi
 }
 
 copy_worktree_includes() {
@@ -355,6 +378,15 @@ PROMPT_EOF
 }
 
 start_tracks() {
+  # Validate harness FIRST, before any state mutation (worktree creation,
+  # registry init, prompt files, mkdir). Failing later (inside the per-
+  # module case) leaves orphan worktrees on disk for unsupported harnesses.
+  case "$HARNESS" in
+    codex) ;;
+    claude) die "harness 'claude' is not yet supported with parallel tracks (Stage 1 ships codex only). Use --harness=codex or run /project-module per-module sequentially." ;;
+    *) die "unsupported harness: $HARNESS" ;;
+  esac
+
   build_plan
   ensure_registry
   mkdir -p "$REPO_ROOT/.claude/worktrees" "$REPO_ROOT/.kit-orchestration/tracks"
@@ -405,15 +437,9 @@ start_tracks() {
         ) > "$prompt_dir/launcher.log" 2>&1 &
         pid=$!
         ;;
-      claude)
-        # Stage 1 only ships the codex harness through the parallel-tracks
-        # launcher. Routing claude through the dispatcher would need
-        # dispatch.sh to grow a non-codex code path (different exec, no
-        # --json/--output-schema, different log shape) — out of scope for
-        # Stage 1. Fail fast rather than silently bypass the per-track
-        # lock, JSON-mode capture, and schema validation.
-        die "harness 'claude' is not yet supported with parallel tracks (Stage 1 ships codex only). Use --harness=codex or run /project-module per-module sequentially."
-        ;;
+      # NB: claude is rejected at the top of start_tracks before any
+      # worktree is created, so this case is unreachable for it. We keep
+      # only the codex branch and the wildcard guard here.
       *) die "unsupported harness: $HARNESS" ;;
     esac
 
