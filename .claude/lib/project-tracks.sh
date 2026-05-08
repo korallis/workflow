@@ -44,14 +44,6 @@ parse_args() {
   done
 }
 
-is_brownfield_repo() {
-  local count
-  count=$(find "$REPO_ROOT" -maxdepth 2 \( -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.rb" -o -name "*.go" \) \
-    -not -path "$REPO_ROOT/node_modules/*" \
-    -not -path "$REPO_ROOT/.claude/*" 2>/dev/null | wc -l | tr -d ' ')
-  [[ "$count" -gt 5 ]]
-}
-
 discover_modules() {
   if (( ${#MODULE_ARGS[@]} > 0 )); then
     printf '%s\n' "${MODULE_ARGS[@]}"
@@ -102,14 +94,12 @@ line_has_dependency_between() {
 }
 
 build_plan() {
+  # SPEC §6 mandates "trust parallel.yaml only; no silent heuristics for
+  # brownfield". A module without parallel.yaml is refused outright,
+  # regardless of repo shape.
   [[ -f "$MODULES_FILE" ]] || die "specs/MODULES.md is absent. Create it first, then add per-module parallel.yaml files before running /project-tracks plan."
   [[ "$PARALLEL_MAX" =~ ^[0-9]+$ ]] || die "KIT_PARALLEL_MAX must be numeric"
   (( PARALLEL_MAX >= 1 )) || die "KIT_PARALLEL_MAX must be at least 1"
-
-  local brownfield="false"
-  if is_brownfield_repo; then
-    brownfield="true"
-  fi
 
   mapfile -t CANDIDATES < <(discover_modules)
   (( ${#CANDIDATES[@]} > 0 )) || die "no modules selected or discovered under specs/modules/"
@@ -120,12 +110,7 @@ build_plan() {
   local module yaml version
   for module in "${CANDIDATES[@]}"; do
     yaml="$REPO_ROOT/specs/modules/$module/parallel.yaml"
-    if [[ ! -f "$yaml" ]]; then
-      if [[ "$brownfield" == "true" ]]; then
-        die "$module: add parallel.yaml or run sequentially"
-      fi
-      die "$module: add parallel.yaml or run sequentially"
-    fi
+    [[ -f "$yaml" ]] || die "$module: add parallel.yaml or run sequentially"
     version="$(yaml_version "$yaml")"
     [[ "$version" == "1" ]] || die "$module: parallel.yaml must declare version: 1"
     PLAN_MODULES+=("$module")
