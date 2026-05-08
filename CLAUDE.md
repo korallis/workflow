@@ -90,10 +90,12 @@ Every Claude session follows a 5-phase sequence, executed in order:
 
 Some tasks are big enough that you want Claude (Opus 4.7) to plan and review while Codex CLI (gpt-5.5) does the heavy implementation. The kit supports this via `/project-execute`:
 
-- **Plan + Review**: Claude Code (this session). Reads specs, builds the dispatch prompt, reads back the scrubbed log, summarises, runs the review skill.
-- **Execute**: Codex CLI (`gpt-5.5`, medium reasoning effort), launched via `.claude/lib/dispatch.sh`. Runs in a live tmux pane that splits into your most-recent attached session.
+- **Plan + Review**: Claude Code (this session). Reads specs, builds the dispatch prompt, reads back the scrubbed structured report + JSONL events, smoke-tests the working tree, **applies commits proposed by Codex** (orchestrator-commits pattern), summarises, runs the review skill.
+- **Execute**: Codex CLI (`gpt-5.5`, medium reasoning effort), launched via `.claude/lib/dispatch.sh` with `--json --output-schema`. Runs in a live tmux pane that splits into your most-recent attached session.
 
 Single-harness mode (`/project-module`) keeps everything in Claude. Use dual-harness when the module is large, well-specced, and you want to watch implementation happen in real time.
+
+**Orchestrator-commits is canonical.** Codex does NOT commit. It leaves the working tree dirty and emits a structured final report (schema at `.claude/skills/project-execute/codex-report-schema.json`) listing `proposed_commits`. Claude reviews the diff, smoke-tests, and applies commits with `Co-Authored-By` attribution. This sidesteps Codex's `workspace-write` sandbox `.git` restriction and gives a verification gate that catches spec deviations and training-data bleed-through before they land in history.
 
 **Prerequisites**:
 
