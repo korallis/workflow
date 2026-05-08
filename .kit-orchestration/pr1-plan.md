@@ -32,9 +32,9 @@ This plan reflects an audit of the actual repo state (which contradicts a few de
 
 ---
 
-## Codex CLI flag reference (verified against 0.128.0)
+## Codex CLI flag reference (verified against 0.128.0; re-confirmed 2026-05-08)
 
-Confirmed by `codex exec --help` and OpenAI docs:
+Confirmed by running `codex exec --help` against the locally-installed Codex CLI 0.128.0. **Caveat (CodeRabbit feedback):** Codex CLI 0.129.0 is the current upstream release, and external documentation suggests `--reasoning-effort=<level>` may exist as a CLI flag in newer versions. We have not upgraded Codex during PR1 work, so the table below describes what we ran. The `-c model_reasoning_effort=<level>` config override has been the canonical mechanism since at least 0.10x and works on 0.128.0, 0.129.0, and forward — we use it as the version-portable approach. If a future PR upgrades to 0.129.0+ and the CLI flag is verified to exist, the dispatch contract may add it as a synonym, but the config override remains canonical.
 
 | Flag | Form | Use |
 |---|---|---|
@@ -48,7 +48,7 @@ Confirmed by `codex exec --help` and OpenAI docs:
 | `--ephemeral` | flag | Don't persist session. |
 | `--ignore-user-config` | flag | Skip `~/.codex/config.toml`. |
 
-**Flags that DO NOT exist** (despite the original prompt): `--reasoning-effort`, `--reasoning_effort`. Use `-c model_reasoning_effort=high|medium|low|xhigh`.
+**Flags absent from Codex CLI 0.128.0** (re-verified 2026-05-08): `--reasoning-effort`, `--reasoning_effort`. The original task brief assumed they exist; they do not in 0.128.0. Use `-c model_reasoning_effort=high|medium|low|xhigh` instead — this is the documented canonical mechanism and is the form OMX itself uses (`omx setup` writes `model_reasoning_effort = "high"` to `~/.codex/config.toml`). Newer Codex versions (0.129.0+) may add a CLI-flag synonym; verify with `codex exec --help` before relying on it.
 
 ---
 

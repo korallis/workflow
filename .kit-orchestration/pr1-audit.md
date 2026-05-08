@@ -16,7 +16,7 @@ This file records where the original task brief was inaccurate, so the validator
 
 **Reality:** `bootstrap.sh` line 2847 already writes the file via the `TEMPLATE_CLAUDE2_EOF` heredoc:
 
-```
+```text
 2847:cat > ".claude/skills/project-spec/claude-module-template.md" << 'TEMPLATE_CLAUDE2_EOF'
 ```
 

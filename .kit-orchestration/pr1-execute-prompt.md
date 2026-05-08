@@ -55,14 +55,14 @@ After deletions, verify with `bash -n bootstrap.sh` that the script still parses
 ### 3. Bug #6 + structure tree — README updates
 - `README.md:39`: replace `https://your-repo/bootstrap.sh` with `https://raw.githubusercontent.com/korallis/workflow/main/bootstrap.sh`.
 - `README.md:84-87`: in the directory tree, currently:
-  ```
+  ```text
   │       ├── project-spec/
   │       │   ├── SKILL.md
   │       │   ├── module-spec-template.md
   │       │   └── claude-module-template.md
   ```
   Change to:
-  ```
+  ```text
   │       ├── project-spec/
   │       │   └── SKILL.md
   ```
@@ -99,7 +99,7 @@ Cover all 13 sections from the original ENHANCEMENT_PLAN.md (Critical Bug fix + 
 
 After applying all edits, write a brief markdown report to stdout with:
 
-```
+```text
 ## Changes applied
 - <list of every file you modified, with line counts changed>
 
