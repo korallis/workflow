@@ -35,15 +35,18 @@ echo ""
 # Create directory structure
 echo -e "${BOLD}Creating kit structure...${RESET}"
 mkdir -p .claude/commands
+mkdir -p .claude/lib
 mkdir -p .claude/skills/project-init
 mkdir -p .claude/skills/project-research
 mkdir -p .claude/skills/project-blueprint
 mkdir -p .claude/skills/project-spec
 mkdir -p .claude/skills/project-module
+mkdir -p .claude/skills/project-execute
 mkdir -p .claude/skills/project-review
 mkdir -p .claude/skills/project-status
 mkdir -p .claude/skills/project-deploy
 mkdir -p .claude/skills/project-test
+mkdir -p .kit-orchestration
 mkdir -p specs/modules
 
 # =============================================================================
@@ -79,6 +82,7 @@ Sessions are triggered by explicit commands that signal intent:
 | `/project-blueprint` | Architecture mode — system design or regeneration |
 | `/project-spec [module]` | Specification mode — detailed module design |
 | `/project-module [name]` | Implementation mode — code and tests |
+| `/project-execute [module]` | Dual-harness mode: hand a fully-specced module to Codex CLI for implementation while Claude orchestrates. Live tmux pane in your most-recent attached session. |
 | `/project-review` | Wrap-up mode — capture learnings |
 | `/project-status` | Dashboard — show current state |
 | `/project-deploy` | Deployment mode — deploy and verify |
@@ -136,6 +140,27 @@ Every Claude session follows a 5-phase sequence, executed in order:
 
 ---
 
+## Dual-Harness Workflow
+
+Some tasks are big enough that you want Claude (Opus 4.7) to plan and review while Codex CLI (gpt-5.5) does the heavy implementation. The kit supports this via `/project-execute`:
+
+- **Plan + Review**: Claude Code (this session). Reads specs, builds the dispatch prompt, reads back the scrubbed log, summarises, runs the review skill.
+- **Execute**: Codex CLI (`gpt-5.5`, medium reasoning effort), launched via `.claude/lib/dispatch.sh`. Runs in a live tmux pane that splits into your most-recent attached session.
+
+Single-harness mode (`/project-module`) keeps everything in Claude. Use dual-harness when the module is large, well-specced, and you want to watch implementation happen in real time.
+
+**Prerequisites**:
+
+- `npm install -g @openai/codex` (Codex CLI 0.128+ tested).
+- Authenticate. Two paths with different model availability:
+  - `codex login` — ChatGPT auth. Required for `gpt-5.5` access without API tier requirements.
+  - `export OPENAI_API_KEY=…` — API-key auth. `gpt-5.5` requires Tier 1+ on your OpenAI org; if your org lacks the tier, the preflight will fail with a model-availability error.
+- A tmux session with at least one attached client. dispatch.sh detects the most-recent attached client via `tmux list-clients` — Claude Code itself doesn't have to be inside tmux as long as one client is attached somewhere. Override with `KIT_TMUX_SESSION=<name>` when you have multiple sessions.
+
+Portability: dispatch.sh works on Linux and macOS. Requires GNU coreutils (`timeout` on Linux, `gtimeout` after `brew install coreutils` on macOS). Lock is mkdir-based (no `flock` dependency).
+
+---
+
 ## Available Slash Commands
 
 | Command | Usage | Purpose |
@@ -149,6 +174,7 @@ Every Claude session follows a 5-phase sequence, executed in order:
 | `/project-status` | `/project-status` | Display project dashboard and current state |
 | `/project-deploy` | `/project-deploy` | Deploy to staging/production and verify |
 | `/project-test` | `/project-test` | Comprehensive test pass across all modules |
+| `/project-execute` | `/project-execute [module]` | Dual-harness mode: hand a fully-specced module to Codex CLI for implementation while Claude orchestrates |
 
 ---
 
@@ -3720,6 +3746,400 @@ SKILL_TEST_EOF
 echo -e "  ${GREEN}✓${RESET} .claude/skills/project-test/SKILL.md"
 
 # =============================================================================
+# SKILL: project-execute (dual-harness)
+# =============================================================================
+
+cat > ".claude/skills/project-execute/SKILL.md" << 'SKILL_EXECUTE_EOF'
+---
+name: project-execute
+description: Implement a fully-specced module via dual-harness execution — Claude orchestrates, Codex CLI executes inside a live tmux pane in your attached session. Use when ready to write code for a module that has approved SPEC.md and CLAUDE.md files. Triggers on phrases like 'execute the X module via codex', 'dual-harness build', or '/project-execute X'.
+effort: high
+---
+
+# project-execute
+
+Hands a fully-specced module to Codex CLI (gpt-5.5) for implementation while Claude Code retains plan/review responsibilities. Live progress streams into a tmux pane that splits into your most-recent attached session.
+
+## Prerequisites (abort if missing)
+
+1. **`$ARGUMENTS` validation**: must match `^[a-z0-9][a-z0-9-]*$` (kebab-case, no slashes, no `..`). Abort if missing or invalid: ask the user "Which module? Existing modules: <list of `specs/modules/*/`>". If invalid, refuse and explain.
+2. Read `CLAUDE.md` (root) — operating rules.
+3. Read `specs/MASTER_BLUEPRINT.md` — system architecture. **If missing**: stop and tell the user "No `specs/MASTER_BLUEPRINT.md` found. Run `/project-blueprint` first to establish the architecture, then re-run `/project-execute`."
+4. Read `specs/modules/$ARGUMENTS/SPEC.md` — module spec. If missing: stop and tell the user "No spec at `specs/modules/$ARGUMENTS/SPEC.md`. Run `/project-spec $ARGUMENTS` first."
+5. Read `specs/modules/$ARGUMENTS/CLAUDE.md` — module conventions. If missing: same as above.
+6. Read `LEARNINGS.md` (optional) — accumulated patterns.
+
+## Build the dispatch prompt
+
+**First, compute one timestamp token and reuse it for every artefact in this run** (so the prompt file, log file, and last-message file all share the same `<TS>`):
+
+```bash
+TS="$(date +%Y%m%d-%H%M%S)-$$"
+```
+
+Then concatenate the following into a single prompt file at `.kit-orchestration/exec-$ARGUMENTS-$TS-prompt.md`:
+
+1. A header: model + effort + module name + timestamp.
+2. The full text of `CLAUDE.md` (root).
+3. The full text of `specs/MASTER_BLUEPRINT.md`.
+4. The full text of the module's `SPEC.md`.
+5. The full text of the module's `CLAUDE.md`.
+6. An explicit instruction block:
+
+   ```text
+   You are the executor in a dual-harness orchestration. Implement the module
+   above end-to-end with these constraints:
+
+   - Build phase by phase. After each phase: run tests; if green, git commit
+     with a conventional message; if red, fix or stop and ask.
+   - Do NOT manually edit files inside .git/ (e.g. config, hooks, refs). The
+     normal `git add` / `git commit` writes that those commands perform are
+     expected and allowed.
+   - Do NOT `git push`. Do NOT modify CI configuration (.github/, etc.).
+   - Do NOT modify files outside the module's directory unless the spec
+     requires shared edits — in that case, list them in your final report.
+   - Stop and ask if any spec instruction is ambiguous.
+   - At the end, write a final report to stdout with: phases completed,
+     files created, tests passing/failing, and any deviations from the spec.
+   ```
+
+7. The full prompt template at `.claude/skills/project-execute/dispatch-prompt-template.md` provides the canonical assembly order; follow it.
+
+## Dispatch via dispatch.sh
+
+Run, as a single Bash tool call (reusing the same `$TS` from the prompt-build step):
+
+```bash
+bash .claude/lib/dispatch.sh execute "$ARGUMENTS" gpt-5.5 medium \
+  ".kit-orchestration/exec-$ARGUMENTS-$TS-prompt.md"
+```
+
+The dispatcher handles tmux split (into the most-recent attached session), log capture, lock acquisition, auth/model preflight, timeout enforcement, and exit-code propagation. **Note**: dispatch.sh writes raw logs — secret scrubbing happens later, when this skill reads the log back. If `dispatch.sh` exits non-zero, surface the error and stop.
+
+## After Codex returns
+
+Use the same `$TS` from the prompt-build step. **Both `-last.md` and `.log` must be piped through `scrub-secrets.sh` before re-entering Claude's context** — `-last.md` is Codex's final agent message and may include credentials it echoed during the run; do not trust it as pre-sanitised.
+
+1. Read the scrubbed last-message: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS-last.md`.
+2. Read the scrubbed run log tail: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.log | tail -200`. Never read the raw `.log` or `-last.md` directly.
+3. Summarise the outcome to the user: phases completed, commits Codex created on the branch, tests run, deviations.
+4. **Run the review skill in this session**: read `.claude/skills/project-review/SKILL.md` and follow its instructions to update `LEARNINGS.md`. (Skills cannot literally invoke other skills as user actions; this is the Claude-reads-and-follows pattern.) Alternatively, if the user prefers an isolated review, suggest they run `/project-review --isolate` (added in PR3).
+5. Do NOT push the branch — that's the user's call.
+
+Note: the `<TS>` placeholders in any spec or log examples elsewhere in the kit refer to the same `$TS` value computed once per `/project-execute` run.
+SKILL_EXECUTE_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/skills/project-execute/SKILL.md"
+
+cat > ".claude/skills/project-execute/dispatch-prompt-template.md" << 'TEMPLATE_DISPATCH_PROMPT_EOF'
+# project-execute Dispatch Prompt Template
+
+Use this template when assembling `.kit-orchestration/exec-<module>-<timestamp>-prompt.md`.
+Keep the section order stable so Codex receives project-wide rules before module-specific instructions.
+
+---
+
+## 1. Dispatch Header
+
+<!-- placeholder: model, reasoning effort, module name, timestamp, repository root -->
+
+---
+
+## 2. Root Operating Rules
+
+Source: `CLAUDE.md`
+
+<!-- placeholder: full root CLAUDE.md content -->
+
+---
+
+## 3. Master Blueprint
+
+Source: `specs/MASTER_BLUEPRINT.md`
+
+<!-- placeholder: full master blueprint content -->
+
+---
+
+## 4. Module Specification
+
+Source: `specs/modules/<module>/SPEC.md`
+
+<!-- placeholder: full module SPEC.md content -->
+
+---
+
+## 5. Module Conventions
+
+Source: `specs/modules/<module>/CLAUDE.md`
+
+<!-- placeholder: full module CLAUDE.md content -->
+
+---
+
+## 6. Executor Instruction Block
+
+<!-- placeholder: explicit dual-harness implementation constraints from SKILL.md -->
+TEMPLATE_DISPATCH_PROMPT_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/skills/project-execute/dispatch-prompt-template.md"
+
+# =============================================================================
+# LIB: shared dispatcher + secret scrubber (chmod +x)
+# =============================================================================
+
+cat > ".claude/lib/dispatch.sh" << 'LIB_DISPATCH_EOF'
+#!/usr/bin/env bash
+# .claude/lib/dispatch.sh — dual-harness Codex dispatcher
+#
+# Runs Codex CLI as a child process, tees output to a log under
+# .kit-orchestration/, and (when an attached tmux session is reachable)
+# splits a viewer pane that runs `tail -f` on the log so the user sees
+# the run live in their existing terminal.
+#
+# Usage: dispatch.sh <phase> <id> <model> <effort> <prompt-file>
+#   phase: validate | execute | review | <free-form-tag>
+#   id:    stable identifier (PR number, module name, etc.) — kebab-case
+#   model: Codex model (e.g. gpt-5.5)
+#   effort: low | medium | high | xhigh   (passed via -c model_reasoning_effort=...)
+#   prompt-file: path to a file whose contents are streamed to Codex via stdin
+#
+# Env knobs:
+#   KIT_TMUX_SESSION         override which tmux session to split into
+#   KIT_TMUX_SPLIT           'h' (default) or 'v'
+#   KIT_NO_TMUX=1            force inline streaming (no tmux pane)
+#   KIT_CODEX_TIMEOUT        hard timeout in seconds for the main exec (default 1800)
+#   KIT_AUTH_PREFLIGHT_SECONDS  preflight timeout (default 15)
+#   KIT_ALLOW_CONCURRENT=1   bypass single-flight lock
+#   KIT_CODEX_SANDBOX        override sandbox mode (default workspace-write)
+#
+# Portability: works on Linux and macOS. Requires either `timeout`
+# (coreutils, default on Linux) or `gtimeout` (Homebrew coreutils on
+# macOS). Lock is mkdir-based, no flock dependency.
+
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+readonly KIT_DIR="$REPO_ROOT/.kit-orchestration"
+readonly LOCK_DIR="$KIT_DIR/.lock"
+
+die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+warn() { printf '\033[33mwarn:\033[0m %s\n'  "$*" >&2; }
+info() { printf '\033[36minfo:\033[0m %s\n'  "$*" >&2; }
+
+# --- portable timeout wrapper ------------------------------------------------
+
+kit_timeout_cmd=""
+if command -v timeout >/dev/null 2>&1; then
+  kit_timeout_cmd="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  kit_timeout_cmd="gtimeout"
+fi
+
+kit_timeout() {
+  # Usage: kit_timeout <seconds> <cmd> [args...]
+  if [[ -z "$kit_timeout_cmd" ]]; then
+    die "neither 'timeout' nor 'gtimeout' on PATH. Install GNU coreutils (Linux: apt/dnf install coreutils; macOS: brew install coreutils)."
+  fi
+  "$kit_timeout_cmd" "$@"
+}
+
+# --- arg parsing -------------------------------------------------------------
+
+(( $# == 5 )) || die "usage: dispatch.sh <phase> <id> <model> <effort> <prompt-file>"
+readonly PHASE="$1" ID="$2" MODEL="$3" EFFORT="$4" PROMPT_FILE="$5"
+
+case "$PHASE" in
+  validate|execute|review) ;;
+  *) [[ "$PHASE" =~ ^[a-z][a-z0-9-]*$ ]] || die "phase must be kebab-case alphanumeric, got: $PHASE" ;;
+esac
+[[ "$ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "id must be kebab-case alphanumeric, got: $ID"
+[[ "$EFFORT" =~ ^(low|medium|high|xhigh)$ ]] || die "effort must be low|medium|high|xhigh, got: $EFFORT"
+[[ -f "$PROMPT_FILE" ]] || die "prompt file not found: $PROMPT_FILE"
+
+# --- preflight: codex CLI presence + auth + model availability ---------------
+
+command -v codex >/dev/null 2>&1 || die "codex CLI not found on PATH. Install with: npm install -g @openai/codex"
+
+readonly KIT_CODEX_TIMEOUT="${KIT_CODEX_TIMEOUT:-1800}"
+readonly KIT_CODEX_SANDBOX="${KIT_CODEX_SANDBOX:-workspace-write}"
+readonly KIT_AUTH_PREFLIGHT_SECONDS="${KIT_AUTH_PREFLIGHT_SECONDS:-15}"
+
+# Auth + model preflight. Uses the actual target model so we surface
+# "model not available for this auth tier" before opening tmux panes.
+auth_check_log="$(mktemp)"
+trap 'rm -f "$auth_check_log"' EXIT
+if ! kit_timeout "$KIT_AUTH_PREFLIGHT_SECONDS" codex exec \
+     -m "$MODEL" \
+     --skip-git-repo-check \
+     -s read-only \
+     -c model_reasoning_effort=low \
+     - <<<'echo dispatch.sh auth preflight' >"$auth_check_log" 2>&1; then
+  warn "codex preflight failed (model=$MODEL, timeout=${KIT_AUTH_PREFLIGHT_SECONDS}s). Output:"
+  sed 's/^/    /' "$auth_check_log" >&2
+  die "Auth or model availability error. Try \`codex login\` (ChatGPT auth — required for gpt-5.5 access without API tier) or set OPENAI_API_KEY for a tier that supports model '$MODEL'. Increase KIT_AUTH_PREFLIGHT_SECONDS if the network is slow."
+fi
+
+# --- single-flight lock (mkdir-based, portable) ------------------------------
+
+mkdir -p "$KIT_DIR"
+if [[ -z "${KIT_ALLOW_CONCURRENT:-}" ]]; then
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    die "another dispatch.sh run is in progress (lock dir at $LOCK_DIR). If a previous run died, remove it manually. Set KIT_ALLOW_CONCURRENT=1 to bypass."
+  fi
+  trap 'rm -rf "$LOCK_DIR"; rm -f "$auth_check_log"' EXIT
+fi
+
+# --- log path (PID-suffixed to avoid 1s timestamp collisions) ----------------
+
+readonly TIMESTAMP="$(date +%Y%m%d-%H%M%S)-$$"
+readonly LOG_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}.log"
+readonly LAST_FILE="$KIT_DIR/${PHASE}-${ID}-${TIMESTAMP}-last.md"
+touch "$LOG_FILE"
+info "log: $LOG_FILE"
+
+# --- tmux session resolution -------------------------------------------------
+
+# NOTE: this resolves "the most-recent attached tmux client", which is
+# usually the user's current terminal but is not guaranteed when multiple
+# clients are attached to different sessions. Use KIT_TMUX_SESSION to pin.
+
+resolve_tmux_session() {
+  [[ -n "${KIT_NO_TMUX:-}" ]] && return 1
+  command -v tmux >/dev/null 2>&1 || return 1
+
+  if [[ -n "${KIT_TMUX_SESSION:-}" ]]; then
+    if tmux has-session -t "$KIT_TMUX_SESSION" 2>/dev/null; then
+      printf '%s' "$KIT_TMUX_SESSION"; return 0
+    fi
+    warn "KIT_TMUX_SESSION=$KIT_TMUX_SESSION set but session does not exist; falling back to detection"
+  fi
+
+  local sess
+  sess=$(tmux list-clients -F '#{client_activity} #{client_session}' 2>/dev/null \
+           | sort -rn | head -1 | awk '{print $2}')
+  if [[ -n "$sess" ]]; then
+    printf '%s' "$sess"; return 0
+  fi
+
+  # Detached sessions are intentionally ignored — we only split where a
+  # human is watching. Set KIT_TMUX_SESSION to override.
+  return 1
+}
+
+TMUX_SESSION=""
+if tmux_session=$(resolve_tmux_session); then
+  TMUX_SESSION="$tmux_session"
+  split_flag="-${KIT_TMUX_SPLIT:-h}"
+  info "splitting tmux session '$TMUX_SESSION' (override with KIT_TMUX_SESSION=name)"
+  if ! tmux split-window -t "$TMUX_SESSION" "$split_flag" \
+        "echo '── kit-orchestration: $PHASE/$ID ──'; tail -f '$LOG_FILE'" >/dev/null 2>&1; then
+    msg="tmux split-window failed for session '$TMUX_SESSION'; viewing log inline."
+    warn "$msg"
+    echo "## dispatch.sh: $msg" >> "$LOG_FILE"
+    TMUX_SESSION=""
+  fi
+fi
+if [[ -z "$TMUX_SESSION" ]]; then
+  info "no attached tmux client to split into — streaming inline (KIT_NO_TMUX=1 to silence)"
+  echo "==== Codex output begins ($PHASE/$ID) ===="
+fi
+readonly TMUX_SESSION
+
+# --- run codex (prompt via stdin to avoid ARG_MAX) ---------------------------
+
+set +e
+kit_timeout "$KIT_CODEX_TIMEOUT" codex exec \
+  -m "$MODEL" \
+  -c "model_reasoning_effort=$EFFORT" \
+  -s "$KIT_CODEX_SANDBOX" \
+  --skip-git-repo-check \
+  -C "$REPO_ROOT" \
+  -o "$LAST_FILE" \
+  - <"$PROMPT_FILE" 2>&1 \
+  | tee -a "$LOG_FILE"
+codex_rc=${PIPESTATUS[0]}
+set -e
+
+echo "EXIT=$codex_rc" >> "$LOG_FILE"
+
+if [[ -z "$TMUX_SESSION" ]]; then
+  echo "==== Codex output ends (exit $codex_rc) ===="
+fi
+
+if (( codex_rc == 124 )); then
+  die "codex exec timed out after ${KIT_CODEX_TIMEOUT}s (set KIT_CODEX_TIMEOUT=<seconds> to extend)"
+fi
+
+if (( codex_rc != 0 )); then
+  die "codex exec failed with exit $codex_rc; see $LOG_FILE"
+fi
+
+info "dispatch complete: $LAST_FILE"
+exit 0
+LIB_DISPATCH_EOF
+chmod +x ".claude/lib/dispatch.sh"
+echo -e "  ${GREEN}✓${RESET} .claude/lib/dispatch.sh"
+
+cat > ".claude/lib/scrub-secrets.sh" << 'LIB_SCRUB_EOF'
+#!/usr/bin/env bash
+# .claude/lib/scrub-secrets.sh — read-path secret redactor
+#
+# Reads stdin (or a file path arg), redacts common credential shapes,
+# writes to stdout. Used by Claude when reading dispatch logs back into
+# context, so secrets that Codex may have echoed don't get re-injected.
+#
+# Patterns covered (deliberately conservative — false positives ok,
+# false negatives bad):
+#   - Anthropic / OpenAI keys: sk-ant-..., sk-proj-..., sk-...
+#   - GitHub PATs: ghp_..., gho_..., ghs_..., ghu_..., github_pat_...
+#   - Slack tokens: xoxb-, xoxa-, xoxp-, xoxs-, xapp-
+#   - Stripe secret keys: sk_live_..., rk_live_...
+#   - JWTs: eyJ<base64>.<base64>.<base64>
+#   - Bearer tokens: Bearer <opaque>
+#   - Authorization: <opaque> headers (without Bearer scheme)
+#   - Basic auth in URLs: https://user:password@...
+#   - AWS access keys: AKIA[0-9A-Z]{16}
+#
+# Patterns deliberately NOT covered:
+#   - Generic 32+ hex strings (would redact git SHAs, file hashes, etc.)
+#   - Any heuristic for high-entropy short strings (false positive risk too high)
+#
+# Usage:
+#   cat log | scrub-secrets.sh              # stdin → stdout
+#   scrub-secrets.sh path/to/log            # file → stdout
+
+set -euo pipefail
+
+input() {
+  if (( $# == 0 )); then cat
+  else cat "$1"
+  fi
+}
+
+input "$@" | sed -E '
+  s/sk-ant-[A-Za-z0-9_-]{20,}/sk-ant-REDACTED/g
+  s/sk-proj-[A-Za-z0-9_-]{20,}/sk-proj-REDACTED/g
+  s/sk-[A-Za-z0-9_-]{32,}/sk-REDACTED/g
+  s/sk_live_[A-Za-z0-9]{20,}/sk_live_REDACTED/g
+  s/rk_live_[A-Za-z0-9]{20,}/rk_live_REDACTED/g
+  s/ghp_[A-Za-z0-9]{30,}/ghp_REDACTED/g
+  s/gho_[A-Za-z0-9]{30,}/gho_REDACTED/g
+  s/ghs_[A-Za-z0-9]{30,}/ghs_REDACTED/g
+  s/ghu_[A-Za-z0-9]{30,}/ghu_REDACTED/g
+  s/github_pat_[A-Za-z0-9_]{40,}/github_pat_REDACTED/g
+  s/xox[abprs]-[A-Za-z0-9-]{10,}/xox-REDACTED/g
+  s/xapp-[0-9]+-[A-Za-z0-9-]{10,}/xapp-REDACTED/g
+  s/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/eyJ.REDACTED.REDACTED/g
+  s/(Bearer[[:space:]]+)[A-Za-z0-9._~+/=-]{20,}/\1REDACTED/g
+  s/([Aa]uthorization:[[:space:]]+)([A-Za-z][A-Za-z0-9_-]*[[:space:]]+)?[A-Za-z0-9._~+/=-]{20,}/\1\2REDACTED/g
+  s|(https?://)[^:/[:space:]]+:[^@[:space:]]+@|\1REDACTED:REDACTED@|g
+  s/\bAKIA[0-9A-Z]{16}\b/AKIAREDACTED/g
+'
+LIB_SCRUB_EOF
+chmod +x ".claude/lib/scrub-secrets.sh"
+echo -e "  ${GREEN}✓${RESET} .claude/lib/scrub-secrets.sh"
+
+# =============================================================================
 # COMMANDS (thin wrappers that invoke skills)
 # =============================================================================
 
@@ -3775,6 +4195,23 @@ cat > ".claude/commands/project-test.md" << 'CMD_TEST_EOF'
 Read and follow the skill at `.claude/skills/project-test/SKILL.md`.
 CMD_TEST_EOF
 echo -e "  ${GREEN}✓${RESET} .claude/commands/project-test.md"
+
+cat > ".claude/commands/project-execute.md" << 'CMD_EXECUTE_EOF'
+Read and follow the skill at `.claude/skills/project-execute/SKILL.md`.
+CMD_EXECUTE_EOF
+echo -e "  ${GREEN}✓${RESET} .claude/commands/project-execute.md"
+
+# =============================================================================
+# .kit-orchestration scaffolding (idempotent — preserves existing user content)
+# =============================================================================
+if [ ! -f ".kit-orchestration/.gitignore" ]; then
+  cat > ".kit-orchestration/.gitignore" << 'KIT_GITIGNORE_EOF'
+*.log
+*-snapshot.md
+.lock
+KIT_GITIGNORE_EOF
+  echo -e "  ${GREEN}✓${RESET} .kit-orchestration/.gitignore"
+fi
 
 # =============================================================================
 # .gitignore
