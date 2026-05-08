@@ -143,8 +143,12 @@ elif [[ -n "$TRACK_ID" ]]; then
 fi
 
 # --- log path (PID-suffixed to avoid 1s timestamp collisions) ----------------
+# When the orchestrator (e.g. /project-execute) computes a $TS up-front and
+# advertises paths derived from it, it must export KIT_DISPATCH_TS=$TS so we
+# reuse the same token here. Without this, dispatch.sh forks a new TIMESTAMP
+# and the advertised .jsonl/-report.json/.log paths become non-deterministic.
 
-readonly TIMESTAMP="$(date +%Y%m%d-%H%M%S)-$$"
+readonly TIMESTAMP="${KIT_DISPATCH_TS:-$(date +%Y%m%d-%H%M%S)-$$}"
 if [[ -n "$TRACK_ID" ]]; then
   readonly TRACK_LOG_DIR="$KIT_DIR/tracks/${TIMESTAMP}-${TRACK_ID}"
   mkdir -p "$TRACK_LOG_DIR"

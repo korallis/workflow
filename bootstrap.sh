@@ -3906,10 +3906,10 @@ If you genuinely need Codex to commit (e.g. multi-turn runs that depend on inter
 
 ## Dispatch via dispatch.sh
 
-Run, as a single Bash tool call (reusing the same `$TS` from the prompt-build step):
+Run, as a single Bash tool call (reusing the same `$TS` from the prompt-build step). **Export `KIT_DISPATCH_TS=$TS` first** so the dispatcher reuses your token instead of forking a fresh one — without this, the advertised `.jsonl`/`-report.json`/`.log` paths drift from what you computed and downstream `Read` calls fail:
 
 ```bash
-bash .claude/lib/dispatch.sh execute "$ARGUMENTS" gpt-5.5 medium \
+KIT_DISPATCH_TS="$TS" bash .claude/lib/dispatch.sh execute "$ARGUMENTS" gpt-5.5 medium \
   ".kit-orchestration/exec-$ARGUMENTS-$TS-prompt.md"
 ```
 
@@ -3921,7 +3921,7 @@ Use the same `$TS` from the prompt-build step. **All of `-report.json`, `-last.m
 
 1. Read the scrubbed structured report (preferred): `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS-report.json`. This is JSON conforming to `codex-report-schema.json` — `phases_completed`, `files_modified`, `files_created`, `tests_run`, `proposed_commits`, `deviations`, `open_questions`. Trust the structure, but verify each field against repo state.
 2. **Cross-check the report against ground truth.** Run `git status --short`, `git diff --stat`, and the test commands listed in `tests_run`. If `phases_completed` references work that doesn't appear in the diff, treat it as bleed-through and flag to the user. Schema enforcement gives shape; ground truth gives correctness.
-3. Read the scrubbed JSONL events for context if needed: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.jsonl | jq -c .`. Or the pretty log: `tail -200 .kit-orchestration/execute-$ARGUMENTS-$TS.log`. Never read raw `.log`/`.jsonl`/`-report.json` directly.
+3. Read the scrubbed JSONL events for context if needed: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.jsonl | jq -c .`. Or the scrubbed pretty log: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.log | tail -200`. Never read raw `.log`/`.jsonl`/`-report.json` directly — every artefact must pass through `scrub-secrets.sh`.
 4. **Apply `proposed_commits` from the report** (orchestrator-commits pattern). Stage files, write commits with the proposed subjects + Conventional Commit prefixes + `Co-Authored-By: Codex CLI gpt-5.5 (medium)`. If you disagree with the boundaries, split or merge as you see fit before committing.
 5. Summarise to the user: phases completed (verified), commits applied, tests run, deviations from spec, open questions.
 6. **Run the review skill in this session**: read `.claude/skills/project-review/SKILL.md` and follow its instructions to update `LEARNINGS.md`. (Skills cannot literally invoke other skills as user actions; this is the Claude-reads-and-follows pattern.) Alternatively, if the user prefers an isolated review, suggest they run `/project-review --isolate` (added in PR3).
@@ -4328,8 +4328,12 @@ elif [[ -n "$TRACK_ID" ]]; then
 fi
 
 # --- log path (PID-suffixed to avoid 1s timestamp collisions) ----------------
+# When the orchestrator (e.g. /project-execute) computes a $TS up-front and
+# advertises paths derived from it, it must export KIT_DISPATCH_TS=$TS so we
+# reuse the same token here. Without this, dispatch.sh forks a new TIMESTAMP
+# and the advertised .jsonl/-report.json/.log paths become non-deterministic.
 
-readonly TIMESTAMP="$(date +%Y%m%d-%H%M%S)-$$"
+readonly TIMESTAMP="${KIT_DISPATCH_TS:-$(date +%Y%m%d-%H%M%S)-$$}"
 if [[ -n "$TRACK_ID" ]]; then
   readonly TRACK_LOG_DIR="$KIT_DIR/tracks/${TIMESTAMP}-${TRACK_ID}"
   mkdir -p "$TRACK_LOG_DIR"
@@ -4603,9 +4607,18 @@ module_line_number() {
     printf '999999\n'
     return 0
   fi
-  awk -v module="$module" '
-    BEGIN { IGNORECASE=1 }
-    index($0, module) { print NR; found=1; exit }
+  # Whole-slug match: a module slug like "auth" must NOT match inside "oauth"
+  # or "user-profile". Slug chars are [a-z0-9-]; surrounding chars must be
+  # outside that set or line boundaries. Lowercased on both sides for
+  # case-insensitivity (replaces the prior IGNORECASE+index() approach).
+  awk -v mod="$module" '
+    BEGIN {
+      m = tolower(mod)
+      pat = "(^|[^a-z0-9-])" m "([^a-z0-9-]|$)"
+    }
+    {
+      if (tolower($0) ~ pat) { print NR; found=1; exit }
+    }
     END { if (!found) print 999999 }
   ' "$MODULES_FILE"
 }
@@ -4614,8 +4627,16 @@ line_has_dependency_between() {
   local module="$1" other="$2"
   [[ -f "$MODULES_FILE" ]] || return 1
   awk -v a="$module" -v b="$other" '
-    BEGIN { IGNORECASE=1; found=0 }
-    /depend|require|blocked by|after/ && index($0, a) && index($0, b) { found=1 }
+    BEGIN {
+      A = tolower(a); B = tolower(b)
+      pa = "(^|[^a-z0-9-])" A "([^a-z0-9-]|$)"
+      pb = "(^|[^a-z0-9-])" B "([^a-z0-9-]|$)"
+      found = 0
+    }
+    {
+      lc = tolower($0)
+      if (lc ~ /depend|require|blocked by|after/ && lc ~ pa && lc ~ pb) found = 1
+    }
     END { exit found ? 0 : 1 }
   ' "$MODULES_FILE"
 }
@@ -4700,6 +4721,10 @@ json_string() {
 }
 
 with_registry_lock() {
+  # Acquires the mkdir-based lock. The CALLER must install the RETURN trap
+  # so the lock survives until the caller's critical section completes —
+  # installing the trap inside this helper would release the lock the
+  # moment with_registry_lock returns (i.e. before TRACKS_FILE is written).
   mkdir -p "$PARALLEL_DIR/locks"
   local waited=0
   until mkdir "$REGISTRY_LOCK" 2>/dev/null; do
@@ -4707,7 +4732,6 @@ with_registry_lock() {
     (( waited <= 30 )) || die "timed out waiting for registry lock at $REGISTRY_LOCK"
     sleep 1
   done
-  trap 'rm -rf "$REGISTRY_LOCK"' RETURN
 }
 
 ensure_registry() {
@@ -4721,6 +4745,7 @@ append_registry_entry() {
   local module="$1" branch="$2" worktree="$3" harness="$4" port="$5" pid="$6" started="$7"
   ensure_registry
   with_registry_lock
+  trap 'rm -rf "$REGISTRY_LOCK"' RETURN
 
   local id escaped_worktree tmp
   id="track-$module-${started//[^0-9]/}"
@@ -4819,9 +4844,12 @@ start_tracks() {
 
     case "$HARNESS" in
       codex)
+        # KIT_PARALLEL_TRACK already namespaces the dispatcher's lock by
+        # module — KIT_ALLOW_CONCURRENT=1 here would *disable* that lock,
+        # letting a second launch of the same module race in the same
+        # worktree. The per-track lock is the right granularity.
         (
           cd "$worktree"
-          KIT_ALLOW_CONCURRENT=1 \
           KIT_PARALLEL_TRACK="$module" \
           KIT_PARALLEL_PORT="$port" \
           PORT="$port" \
@@ -5345,6 +5373,9 @@ echo -e "  ${GREEN}✓${RESET} .claude/commands/project-security-review.md"
 if [ ! -f ".kit-orchestration/.gitignore" ]; then
   cat > ".kit-orchestration/.gitignore" << 'KIT_GITIGNORE_EOF'
 *.log
+*.jsonl
+*-report.json
+*-last.md
 *-snapshot.md
 .lock
 KIT_GITIGNORE_EOF

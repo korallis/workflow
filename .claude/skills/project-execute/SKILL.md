@@ -71,10 +71,10 @@ If you genuinely need Codex to commit (e.g. multi-turn runs that depend on inter
 
 ## Dispatch via dispatch.sh
 
-Run, as a single Bash tool call (reusing the same `$TS` from the prompt-build step):
+Run, as a single Bash tool call (reusing the same `$TS` from the prompt-build step). **Export `KIT_DISPATCH_TS=$TS` first** so the dispatcher reuses your token instead of forking a fresh one — without this, the advertised `.jsonl`/`-report.json`/`.log` paths drift from what you computed and downstream `Read` calls fail:
 
 ```bash
-bash .claude/lib/dispatch.sh execute "$ARGUMENTS" gpt-5.5 medium \
+KIT_DISPATCH_TS="$TS" bash .claude/lib/dispatch.sh execute "$ARGUMENTS" gpt-5.5 medium \
   ".kit-orchestration/exec-$ARGUMENTS-$TS-prompt.md"
 ```
 
@@ -86,7 +86,7 @@ Use the same `$TS` from the prompt-build step. **All of `-report.json`, `-last.m
 
 1. Read the scrubbed structured report (preferred): `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS-report.json`. This is JSON conforming to `codex-report-schema.json` — `phases_completed`, `files_modified`, `files_created`, `tests_run`, `proposed_commits`, `deviations`, `open_questions`. Trust the structure, but verify each field against repo state.
 2. **Cross-check the report against ground truth.** Run `git status --short`, `git diff --stat`, and the test commands listed in `tests_run`. If `phases_completed` references work that doesn't appear in the diff, treat it as bleed-through and flag to the user. Schema enforcement gives shape; ground truth gives correctness.
-3. Read the scrubbed JSONL events for context if needed: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.jsonl | jq -c .`. Or the pretty log: `tail -200 .kit-orchestration/execute-$ARGUMENTS-$TS.log`. Never read raw `.log`/`.jsonl`/`-report.json` directly.
+3. Read the scrubbed JSONL events for context if needed: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.jsonl | jq -c .`. Or the scrubbed pretty log: `bash .claude/lib/scrub-secrets.sh .kit-orchestration/execute-$ARGUMENTS-$TS.log | tail -200`. Never read raw `.log`/`.jsonl`/`-report.json` directly — every artefact must pass through `scrub-secrets.sh`.
 4. **Apply `proposed_commits` from the report** (orchestrator-commits pattern). Stage files, write commits with the proposed subjects + Conventional Commit prefixes + `Co-Authored-By: Codex CLI gpt-5.5 (medium)`. If you disagree with the boundaries, split or merge as you see fit before committing.
 5. Summarise to the user: phases completed (verified), commits applied, tests run, deviations from spec, open questions.
 6. **Run the review skill in this session**: read `.claude/skills/project-review/SKILL.md` and follow its instructions to update `LEARNINGS.md`. (Skills cannot literally invoke other skills as user actions; this is the Claude-reads-and-follows pattern.) Alternatively, if the user prefers an isolated review, suggest they run `/project-review --isolate` (added in PR3).

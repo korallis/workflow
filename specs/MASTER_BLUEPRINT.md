@@ -100,6 +100,7 @@ Eleven slash commands, each backed by a skill of the same name. Commands are thi
 | `/project-spec [module]` | Plan | Per-module spec (data, API, UI, business logic). |
 | `/project-module [name]` | Execute | Single-harness implementation in this Claude session. |
 | `/project-execute [name]` | Execute | Dual-harness: Claude plans, Codex CLI implements in tmux pane. |
+| `/project-tracks plan\|start\|...` | Execute | Parallel module implementation across isolated git worktrees; each track is one dispatcher invocation under `KIT_PARALLEL_TRACK`. See `specs/modules/parallel-tracks/SPEC.md`. |
 | `/project-review [--isolate]` | Capture | Session learnings → `LEARNINGS.md`/`CLAUDE.md`; `--isolate` adds Explore-agent code review. |
 | `/project-security-review` | Verify | Isolated Explore subagent against UK GDPR / healthcare / OWASP checklist. |
 | `/project-status` | — | Dashboard of specs, implementations, next steps. |
@@ -108,7 +109,7 @@ Eleven slash commands, each backed by a skill of the same name. Commands are thi
 
 **Skill frontmatter.** Skills use `name`, `description`, and (for heavy ones) `effort: high|medium|low|max` — a Claude-Code extension. Other harnesses silently ignore unknown frontmatter, so portability is preserved by omission.
 
-**Heavy-effort skills.** `project-init`, `project-blueprint`, `project-execute`, `project-security-review`.
+**Heavy-effort skills.** `project-init`, `project-blueprint`, `project-execute`, `project-tracks`, `project-security-review`.
 
 ---
 
@@ -116,7 +117,7 @@ Eleven slash commands, each backed by a skill of the same name. Commands are thi
 
 `/project-execute` is the kit's architectural centrepiece. The contract between Claude (planner/reviewer) and Codex (implementer) is mediated by `.claude/lib/dispatch.sh`.
 
-```
+```text
 Claude (Opus 4.7)                       Codex (gpt-5.5, medium effort)
 ─────────────────                       ──────────────────────────────
 read SPEC.md, blueprint, CLAUDE.md
@@ -136,6 +137,8 @@ read scrubbed log → summarise → run review skill
 ```
 
 **Dispatcher invariants.**
+- **Self-relocation.** dispatch.sh copies itself to a `mktemp` path and re-execs before doing any work. Live edits to `.claude/lib/dispatch.sh` during a run (e.g. when the run modifies the kit itself) cannot cause bash to re-read garbled offsets at trap time. Idempotent via `KIT_DISPATCH_RELOCATED`; `KIT_DISPATCH_REPO_ROOT` carries repo location across exec.
+- **Deterministic timestamps.** When the orchestrator computes a `$TS` and advertises paths derived from it, it must export `KIT_DISPATCH_TS=$TS` so the dispatcher reuses the same token. Without this the advertised `.jsonl`/`-report.json`/`.log` paths drift.
 - **Preflight gates execution.** Auth + model availability checked with hard timeout before launch — fast failure beats hung pane.
 - **Single-flight by default.** mkdir-based lock (portable, no `flock` dependency). Concurrent runs require `KIT_ALLOW_CONCURRENT=1`.
 - **Pane discovery is `list-clients`-based.** Splits into the user's *attached* session, not a detached one. This is non-negotiable — see `feedback_tmux_split_user_session.md`. Override with `KIT_TMUX_SESSION=<name>` for multi-session setups.
@@ -143,8 +146,10 @@ read scrubbed log → summarise → run review skill
 - **Sentinel teardown.** Dispatcher writes a unique sentinel on completion; the pane closes itself. No manual cleanup, no leaked panes.
 - **Hard timeout.** `KIT_CODEX_TIMEOUT` (default 1800s) bounds execution.
 - **Read-path scrubbing.** `scrub-secrets.sh` redacts before Claude reads the log back — defence in depth even though Codex shouldn't be writing secrets.
+- **Structured executor reports.** Codex is invoked with `--json --output-schema codex-report-schema.json --output-last-message <report.json>`. The JSONL stream goes to a `.jsonl` file (machine-readable) and through a `jq` pretty-printer into the `.log` file (human pane). The final agent message is a JSON object validated against the schema; this catches training-data bleed-through structurally. Codex does NOT commit (orchestrator-commits canonical).
+- **Track-scoped execution.** When `KIT_PARALLEL_TRACK=<module>` is set, the lock dir resolves to `.claude/parallel/locks/<module>/` (per-track namespace, not the global lock); log dir to `.kit-orchestration/tracks/<TS>-<module>/`; sentinel filename includes the track id; pane title is prefixed with `[track:<module>]`; tmux split direction defaults to `vertical` (denser dashboard). Non-track invocations are byte-identical to legacy behaviour. Do NOT set `KIT_ALLOW_CONCURRENT=1` together with `KIT_PARALLEL_TRACK` for the same module — the per-track lock provides the right granularity, and disabling it lets a second launch race in the same worktree.
 
-**Env knobs.** `KIT_TMUX_SESSION`, `KIT_TMUX_SPLIT` (`h`/`v`), `KIT_NO_TMUX`, `KIT_CODEX_TIMEOUT`, `KIT_AUTH_PREFLIGHT_SECONDS`, `KIT_ALLOW_CONCURRENT`, `KIT_CODEX_SANDBOX` (default `workspace-write`).
+**Env knobs.** `KIT_TMUX_SESSION`, `KIT_TMUX_SPLIT` (`h`/`v`), `KIT_NO_TMUX`, `KIT_CODEX_TIMEOUT`, `KIT_AUTH_PREFLIGHT_SECONDS`, `KIT_ALLOW_CONCURRENT`, `KIT_CODEX_SANDBOX` (default `workspace-write`), `KIT_DISPATCH_TS` (orchestrator-supplied timestamp), `KIT_PARALLEL_TRACK`, `KIT_PARALLEL_PORT`, `KIT_PARALLEL_PORT_BASE`, `KIT_PARALLEL_MAX` (default 4).
 
 ---
 

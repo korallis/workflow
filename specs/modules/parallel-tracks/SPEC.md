@@ -24,7 +24,7 @@ The kit currently runs strictly sequential: one `/project-execute` at a time, ga
 
 ## 3. Artefact model
 
-```
+```text
 your-project/
 ├── .claude/
 │   ├── worktrees/                          ← Claude Code-managed (existing)
@@ -107,12 +107,12 @@ The planner rejects files without a `version` field. When v2 ships, `version: 1`
 
 ## 5. Track lifecycle
 
-```
+```text
 plan          — root reads MODULES.md, picks parallelisable set
                 (no dependency edges between picked modules; no shared paths
                 in parallel.yaml; total <= KIT_PARALLEL_MAX, default 4).
-                Refuses to parallelise modules with no parallel.yaml on
-                brownfield repos — prints `add parallel.yaml or run sequentially`.
+                Refuses any module without parallel.yaml — prints
+                `add parallel.yaml or run sequentially`. (See §6.)
    │
    ▼
 start         — for each track:

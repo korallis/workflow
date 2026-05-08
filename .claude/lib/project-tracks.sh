@@ -76,9 +76,18 @@ module_line_number() {
     printf '999999\n'
     return 0
   fi
-  awk -v module="$module" '
-    BEGIN { IGNORECASE=1 }
-    index($0, module) { print NR; found=1; exit }
+  # Whole-slug match: a module slug like "auth" must NOT match inside "oauth"
+  # or "user-profile". Slug chars are [a-z0-9-]; surrounding chars must be
+  # outside that set or line boundaries. Lowercased on both sides for
+  # case-insensitivity (replaces the prior IGNORECASE+index() approach).
+  awk -v mod="$module" '
+    BEGIN {
+      m = tolower(mod)
+      pat = "(^|[^a-z0-9-])" m "([^a-z0-9-]|$)"
+    }
+    {
+      if (tolower($0) ~ pat) { print NR; found=1; exit }
+    }
     END { if (!found) print 999999 }
   ' "$MODULES_FILE"
 }
@@ -87,8 +96,16 @@ line_has_dependency_between() {
   local module="$1" other="$2"
   [[ -f "$MODULES_FILE" ]] || return 1
   awk -v a="$module" -v b="$other" '
-    BEGIN { IGNORECASE=1; found=0 }
-    /depend|require|blocked by|after/ && index($0, a) && index($0, b) { found=1 }
+    BEGIN {
+      A = tolower(a); B = tolower(b)
+      pa = "(^|[^a-z0-9-])" A "([^a-z0-9-]|$)"
+      pb = "(^|[^a-z0-9-])" B "([^a-z0-9-]|$)"
+      found = 0
+    }
+    {
+      lc = tolower($0)
+      if (lc ~ /depend|require|blocked by|after/ && lc ~ pa && lc ~ pb) found = 1
+    }
     END { exit found ? 0 : 1 }
   ' "$MODULES_FILE"
 }
@@ -173,6 +190,10 @@ json_string() {
 }
 
 with_registry_lock() {
+  # Acquires the mkdir-based lock. The CALLER must install the RETURN trap
+  # so the lock survives until the caller's critical section completes —
+  # installing the trap inside this helper would release the lock the
+  # moment with_registry_lock returns (i.e. before TRACKS_FILE is written).
   mkdir -p "$PARALLEL_DIR/locks"
   local waited=0
   until mkdir "$REGISTRY_LOCK" 2>/dev/null; do
@@ -180,7 +201,6 @@ with_registry_lock() {
     (( waited <= 30 )) || die "timed out waiting for registry lock at $REGISTRY_LOCK"
     sleep 1
   done
-  trap 'rm -rf "$REGISTRY_LOCK"' RETURN
 }
 
 ensure_registry() {
@@ -194,6 +214,7 @@ append_registry_entry() {
   local module="$1" branch="$2" worktree="$3" harness="$4" port="$5" pid="$6" started="$7"
   ensure_registry
   with_registry_lock
+  trap 'rm -rf "$REGISTRY_LOCK"' RETURN
 
   local id escaped_worktree tmp
   id="track-$module-${started//[^0-9]/}"
@@ -292,9 +313,12 @@ start_tracks() {
 
     case "$HARNESS" in
       codex)
+        # KIT_PARALLEL_TRACK already namespaces the dispatcher's lock by
+        # module — KIT_ALLOW_CONCURRENT=1 here would *disable* that lock,
+        # letting a second launch of the same module race in the same
+        # worktree. The per-track lock is the right granularity.
         (
           cd "$worktree"
-          KIT_ALLOW_CONCURRENT=1 \
           KIT_PARALLEL_TRACK="$module" \
           KIT_PARALLEL_PORT="$port" \
           PORT="$port" \
