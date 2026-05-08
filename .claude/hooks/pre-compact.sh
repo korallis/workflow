@@ -17,13 +17,16 @@
 # the latest snapshot path on session resume.
 
 set -euo pipefail
+umask 077
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 readonly OUT_DIR="$REPO_ROOT/specs/sessions"
 mkdir -p "$OUT_DIR"
+chmod 700 "$OUT_DIR" 2>/dev/null || true
 
 readonly TS="$(date +%Y%m%d-%H%M%S)-$$"
+written=()
 
 # Read hook input JSON from stdin (best-effort — Claude Code may pipe nothing
 # in some configurations). Use jq if available; fall back to cat.
@@ -56,6 +59,8 @@ if compgen -G "$REPO_ROOT/.kit-orchestration/pr*-plan.md" >/dev/null 2>&1; then
       echo "---"
       cat "$latest_plan"
     } > "$OUT_DIR/$TS-plan.md"
+    chmod 600 "$OUT_DIR/$TS-plan.md" 2>/dev/null || true
+    written+=("$OUT_DIR/$TS-plan.md")
   fi
 fi
 
@@ -72,6 +77,8 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     echo "---"
     tail -n 50 "$transcript_path"
   } > "$OUT_DIR/$TS-transcript-tail.md"
+  chmod 600 "$OUT_DIR/$TS-transcript-tail.md" 2>/dev/null || true
+  written+=("$OUT_DIR/$TS-transcript-tail.md")
 fi
 
 # Snapshot 3: git activity
@@ -88,6 +95,13 @@ fi
   echo
   git -C "$REPO_ROOT" status --short 2>/dev/null || true
 } > "$OUT_DIR/$TS-git.md"
+chmod 600 "$OUT_DIR/$TS-git.md" 2>/dev/null || true
+written+=("$OUT_DIR/$TS-git.md")
 
-printf 'pre-compact.sh: snapshots written to %s/%s-{plan,transcript-tail,git}.md\n' "$OUT_DIR" "$TS" >&2
+if (( ${#written[@]} == 0 )); then
+  printf 'pre-compact.sh: no snapshots written\n' >&2
+else
+  printf 'pre-compact.sh: snapshots written:\n' >&2
+  printf '  %s\n' "${written[@]}" >&2
+fi
 exit 0

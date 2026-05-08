@@ -5,7 +5,7 @@
 - Current PreCompact input includes common hook fields plus `trigger` and `custom_instructions`; the script safely ignores unused fields like `cwd`, `permission_mode`, and `hook_event_name`.
 - Empty or non-JSON stdin is safe when `jq` is present because failed `jq` reads are swallowed with `|| true`; without `jq`, extracted values are empty and the script still reaches the git snapshot path.
 - `compgen -G "$pattern"` is a Bash builtin available in Bash 3.2 and 5.x; the quoted glob pattern is appropriate because `compgen -G` expects the pattern as an argument.
-- `mkdir -p "$OUT_DIR"` is safe for concurrent hook executions, and the `date +%Y%m%d-%H%M%S)-$$` suffix is sufficient to avoid ordinary output collisions.
+- `mkdir -p "$OUT_DIR"` is safe for concurrent hook executions, and the `$(date +%Y%m%d-%H%M%S)-$$` suffix is sufficient to avoid ordinary output collisions.
 - The git snapshot commands are protected with `2>/dev/null || true`, so git log/status failures do not kill the script.
 - Not blocking compaction is the right default. Claude Code documents that PreCompact can block with exit code 2 or a block decision; this plan intentionally avoids that.
 - Raw `tail -n 50` on the transcript is acceptable for recovery. Claude transcript files are JSONL; it is less readable than `jq` extraction, but it preserves recent events.
