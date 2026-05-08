@@ -36,7 +36,7 @@ The kit solves all of these with three files Claude Code reads automatically (`C
 Download `bootstrap.sh` into your project root (or clone it from your personal template repo):
 
 ```bash
-curl -O https://your-repo/bootstrap.sh
+curl -O https://raw.githubusercontent.com/korallis/workflow/main/bootstrap.sh
 # or just copy it in manually
 ```
 
@@ -82,9 +82,7 @@ your-project/
 │       ├── project-blueprint/
 │       │   └── SKILL.md
 │       ├── project-spec/
-│       │   ├── SKILL.md
-│       │   ├── module-spec-template.md
-│       │   └── claude-module-template.md
+│       │   └── SKILL.md
 │       ├── project-module/
 │       │   └── SKILL.md
 │       ├── project-review/
